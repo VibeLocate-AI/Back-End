@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\GoogleAuthController;
 use App\Http\Controllers\Api\LoginController;
 use App\Http\Controllers\Api\LogoutController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\PropertyController;
 use App\Http\Controllers\Api\RefreshTokenController;
 use App\Http\Controllers\Api\RegisterController;
 use App\Http\Controllers\Api\RememberMeController;
@@ -40,10 +41,6 @@ Route::post(
 |--------------------------------------------------------------------------
 | Google Authentication
 |--------------------------------------------------------------------------
-|
-| Public route:
-| The user does NOT need a Laravel JWT before signing in with Google.
-|
 */
 
 Route::post(
@@ -75,34 +72,22 @@ Route::post(
 |--------------------------------------------------------------------------
 */
 
-/*
-| Original route
-*/
 Route::match(
     ['get', 'post'],
     '/verify-email',
     VerifyEmailController::class
 );
 
-/*
-| Route used by frontend
-*/
 Route::post(
     '/verify-otp',
     VerifyEmailController::class
 );
 
-/*
-| Original route
-*/
 Route::post(
     '/resend-verification',
     ResendVerificationController::class
 );
 
-/*
-| Route used by frontend
-*/
 Route::post(
     '/resend-otp',
     ResendVerificationController::class
@@ -129,6 +114,26 @@ Route::post(
     '/reset-password',
     ResetPasswordController::class
 );
+
+
+/*
+|--------------------------------------------------------------------------
+| Properties
+|--------------------------------------------------------------------------
+|
+| Public routes for browsing property listings.
+|
+*/
+
+Route::get(
+    '/properties',
+    [PropertyController::class, 'index']
+);
+
+Route::get(
+    '/properties/{id}',
+    [PropertyController::class, 'show']
+)->whereNumber('id');
 
 
 /*
