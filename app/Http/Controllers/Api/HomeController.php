@@ -20,7 +20,6 @@ class HomeController extends Controller
             |--------------------------------------------------------------------------
             | Home Properties
             |--------------------------------------------------------------------------
-            | Get the 100 imported Dubai properties from database.
             */
 
             $properties = DB::table('properties as p')
@@ -31,6 +30,7 @@ class HomeController extends Controller
                     'p.type_id',
                     'p.category_id',
                     'p.status_id',
+                    'p.is_featured',
                     'p.title',
                     'p.slug',
                     'p.description',
@@ -165,6 +165,51 @@ class HomeController extends Controller
 
             /*
             |--------------------------------------------------------------------------
+            | Featured Properties
+            |--------------------------------------------------------------------------
+            */
+
+            $featuredProperties = $homeProperties
+                ->filter(function ($property) {
+                    return (int) $property->is_featured === 1;
+                })
+                ->values();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Popular Areas
+            |--------------------------------------------------------------------------
+            */
+
+            $popularAreas = DB::table('neighborhoods as n')
+                ->join(
+                    'property_locations as pl',
+                    'pl.neighborhood_id',
+                    '=',
+                    'n.id'
+                )
+                ->join(
+                    'properties as p',
+                    'p.id',
+                    '=',
+                    'pl.property_id'
+                )
+                ->whereNull('p.deleted_at')
+                ->select([
+                    'n.id',
+                    'n.name',
+                    DB::raw('COUNT(DISTINCT p.id) as properties_count'),
+                ])
+                ->groupBy(
+                    'n.id',
+                    'n.name'
+                )
+                ->orderByDesc('properties_count')
+                ->limit(4)
+                ->get();
+
+            /*
+            |--------------------------------------------------------------------------
             | Property Types
             |--------------------------------------------------------------------------
             */
@@ -195,11 +240,15 @@ class HomeController extends Controller
             |--------------------------------------------------------------------------
             | Testimonials
             |--------------------------------------------------------------------------
-            | Returns only real published reviews.
             */
 
             $testimonials = DB::table('reviews as r')
-                ->join('users as u', 'u.id', '=', 'r.user_id')
+                ->join(
+                    'users as u',
+                    'u.id',
+                    '=',
+                    'r.user_id'
+                )
                 ->where('r.status', 'published')
                 ->whereNull('r.deleted_at')
                 ->whereNull('u.deleted_at')
@@ -240,11 +289,6 @@ class HomeController extends Controller
                 ->whereNull('deleted_at')
                 ->count();
 
-            $importedProperties = DB::table('properties')
-                ->whereNull('deleted_at')
-                ->where('slug', 'like', 'demo-dubai-%')
-                ->count();
-
             /*
             |--------------------------------------------------------------------------
             | Response
@@ -256,14 +300,21 @@ class HomeController extends Controller
 
                 'data' => [
                     'total' => $homeProperties->count(),
+
+                    'popular_areas' => $popularAreas,
+
+                    'featured_properties' => $featuredProperties,
+
                     'properties' => $homeProperties,
+
                     'property_types' => $propertyTypes,
+
                     'categories' => $categories,
+
                     'testimonials' => $testimonials,
 
                     'stats' => [
                         'total_properties' => $totalProperties,
-                        'imported_properties' => $importedProperties,
                     ],
                 ],
             ]);
