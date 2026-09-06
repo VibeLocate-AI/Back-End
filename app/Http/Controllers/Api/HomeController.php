@@ -177,6 +177,31 @@ class HomeController extends Controller
 
             /*
             |--------------------------------------------------------------------------
+            | Recommended Properties
+            |--------------------------------------------------------------------------
+            |
+            | For now:
+            | - Exclude featured properties
+            | - Show the latest listed properties
+            | - Limit to 12 properties
+            |
+            | Later this can be upgraded to true Nearby recommendations
+            | using user latitude and longitude.
+            |
+            */
+
+            $recommendedProperties = $homeProperties
+                ->filter(function ($property) {
+                    return (int) $property->is_featured === 0;
+                })
+                ->sortByDesc(function ($property) {
+                    return $property->listing_date;
+                })
+                ->take(12)
+                ->values();
+
+            /*
+            |--------------------------------------------------------------------------
             | Popular Areas
             |--------------------------------------------------------------------------
             */
@@ -304,6 +329,8 @@ class HomeController extends Controller
                     'popular_areas' => $popularAreas,
 
                     'featured_properties' => $featuredProperties,
+
+                    'recommended_properties' => $recommendedProperties,
 
                     'properties' => $homeProperties,
 
