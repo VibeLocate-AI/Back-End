@@ -1,9 +1,11 @@
 <?php
 
+use App\Http\Controllers\Api\AIContextualSearchController;
 use App\Http\Controllers\Api\ChangePasswordController;
 use App\Http\Controllers\Api\CompleteProfileController;
 use App\Http\Controllers\Api\ForgotPasswordController;
 use App\Http\Controllers\Api\GoogleAuthController;
+use App\Http\Controllers\Api\HomeController;
 use App\Http\Controllers\Api\LoginController;
 use App\Http\Controllers\Api\LogoutController;
 use App\Http\Controllers\Api\ProfileController;
@@ -18,7 +20,7 @@ use App\Http\Controllers\Api\TwoFactorController;
 use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\HomeController;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -37,6 +39,7 @@ Route::post(
 )->middleware(
     'vibe.rate:auth.login,5,15'
 );
+
 
 /*
 |--------------------------------------------------------------------------
@@ -126,10 +129,44 @@ Route::post(
 |
 */
 
-Route::get('/properties', [PropertyController::class, 'index']);
-Route::get('/properties/{id}', [PropertyController::class, 'show']);
+Route::get(
+    '/properties',
+    [PropertyController::class, 'index']
+);
 
-Route::get('/home', [HomeController::class, 'index']);
+Route::get(
+    '/properties/{id}',
+    [PropertyController::class, 'show']
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| Home
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/home',
+    [HomeController::class, 'index']
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| AI Contextual Search
+|--------------------------------------------------------------------------
+|
+| Public contextual property search used from the Home page.
+|
+*/
+
+Route::post(
+    '/ai/contextual-search',
+    [AIContextualSearchController::class, 'search']
+);
+
+
 /*
 |--------------------------------------------------------------------------
 | Protected Routes
