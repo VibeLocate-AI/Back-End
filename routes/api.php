@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\TwoFactorController;
 use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\HomeController;
 
 /*
 |--------------------------------------------------------------------------
@@ -125,17 +126,10 @@ Route::post(
 |
 */
 
-Route::get(
-    '/properties',
-    [PropertyController::class, 'index']
-);
+Route::get('/properties', [PropertyController::class, 'index']);
+Route::get('/properties/{id}', [PropertyController::class, 'show']);
 
-Route::get(
-    '/properties/{id}',
-    [PropertyController::class, 'show']
-)->whereNumber('id');
-
-
+Route::get('/home', [HomeController::class, 'index']);
 /*
 |--------------------------------------------------------------------------
 | Protected Routes
@@ -217,4 +211,5 @@ Route::middleware('jwt')->group(function () {
         '/two-factor',
         [TwoFactorController::class, 'destroy']
     );
+    
 });
