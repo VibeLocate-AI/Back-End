@@ -9,18 +9,9 @@ use Throwable;
 
 class HomeController extends Controller
 {
-    /**
-     * Get all dynamic data required by the Home page.
-     */
     public function index(): JsonResponse
     {
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Home Properties
-            |--------------------------------------------------------------------------
-            */
 
             $properties = DB::table('properties as p')
                 ->whereNull('p.deleted_at')
@@ -48,22 +39,13 @@ class HomeController extends Controller
                 ->limit(100)
                 ->get();
 
-            $propertyIds = $properties
-                ->pluck('id')
-                ->values()
-                ->all();
+            $propertyIds = $properties->pluck('id')->values()->all();
 
             $images = collect();
             $locations = collect();
             $features = collect();
 
             if (!empty($propertyIds)) {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Property Images
-                |--------------------------------------------------------------------------
-                */
 
                 $images = DB::table('property_images')
                     ->whereIn('property_id', $propertyIds)
@@ -78,12 +60,6 @@ class HomeController extends Controller
                     ->orderBy('display_order')
                     ->get()
                     ->groupBy('property_id');
-
-                /*
-                |--------------------------------------------------------------------------
-                | Property Locations
-                |--------------------------------------------------------------------------
-                */
 
                 $locations = DB::table('property_locations')
                     ->whereIn('property_id', $propertyIds)
@@ -100,12 +76,6 @@ class HomeController extends Controller
                     ])
                     ->get()
                     ->keyBy('property_id');
-
-                /*
-                |--------------------------------------------------------------------------
-                | Property Features
-                |--------------------------------------------------------------------------
-                */
 
                 $features = DB::table('property_feature_values as pfv')
                     ->join(
@@ -127,18 +97,8 @@ class HomeController extends Controller
                     ->groupBy('property_id');
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Build Property Data
-            |--------------------------------------------------------------------------
-            */
-
             $homeProperties = $properties->map(
-                function ($property) use (
-                    $images,
-                    $locations,
-                    $features
-                ) {
+                function ($property) use ($images, $locations, $features) {
 
                     $propertyId = $property->id;
 
@@ -146,8 +106,8 @@ class HomeController extends Controller
                         ->get($propertyId, collect())
                         ->values();
 
-                    $property->primary_image = $propertyImages
-                        ->firstWhere('is_primary', 1)
+                    $property->primary_image =
+                        $propertyImages->firstWhere('is_primary', 1)
                         ?? $propertyImages->first();
 
                     $property->images = $propertyImages;
@@ -163,32 +123,11 @@ class HomeController extends Controller
                 }
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Featured Properties
-            |--------------------------------------------------------------------------
-            */
-
             $featuredProperties = $homeProperties
                 ->filter(function ($property) {
                     return (int) $property->is_featured === 1;
                 })
                 ->values();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Recommended Properties
-            |--------------------------------------------------------------------------
-            |
-            | For now:
-            | - Exclude featured properties
-            | - Show the latest listed properties
-            | - Limit to 12 properties
-            |
-            | Later this can be upgraded to true Nearby recommendations
-            | using user latitude and longitude.
-            |
-            */
 
             $recommendedProperties = $homeProperties
                 ->filter(function ($property) {
@@ -199,12 +138,6 @@ class HomeController extends Controller
                 })
                 ->take(12)
                 ->values();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Popular Areas
-            |--------------------------------------------------------------------------
-            */
 
             $popularAreas = DB::table('neighborhoods as n')
                 ->join(
@@ -235,9 +168,70 @@ class HomeController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | Property Types
+            | Top Real Estate Agent
             |--------------------------------------------------------------------------
             */
+
+            $topAgentRaw = DB::table('agency_agents as aa')
+                ->join(
+                    'users as u',
+                    'u.id',
+                    '=',
+                    'aa.user_id'
+                )
+                ->leftJoin(
+                    'user_profiles as up',
+                    'up.user_id',
+                    '=',
+                    'u.id'
+                )
+                ->join(
+                    'agencies as a',
+                    'a.id',
+                    '=',
+                    'aa.agency_id'
+                )
+                ->whereNull('u.deleted_at')
+                ->select([
+                    'u.id as user_id',
+                    'u.first_name',
+                    'u.last_name',
+                    'u.phone',
+                    'up.avatar_url',
+                    'aa.is_manager',
+                    'a.id as agency_id',
+                    'a.name as agency_name',
+                    'a.logo_url as agency_logo',
+                ])
+                ->orderByDesc('aa.is_manager')
+                ->orderBy('aa.joined_at')
+                ->first();
+
+            $topAgent = null;
+
+            if ($topAgentRaw) {
+                $topAgent = [
+                    'user_id' => $topAgentRaw->user_id,
+
+                    'name' => trim(
+                        $topAgentRaw->first_name
+                        . ' '
+                        . $topAgentRaw->last_name
+                    ),
+
+                    'phone' => $topAgentRaw->phone,
+
+                    'avatar_url' => $topAgentRaw->avatar_url,
+
+                    'is_manager' => (bool) $topAgentRaw->is_manager,
+
+                    'agency' => [
+                        'id' => $topAgentRaw->agency_id,
+                        'name' => $topAgentRaw->agency_name,
+                        'logo_url' => $topAgentRaw->agency_logo,
+                    ],
+                ];
+            }
 
             $propertyTypes = DB::table('property_types')
                 ->select([
@@ -247,12 +241,6 @@ class HomeController extends Controller
                 ->orderBy('id')
                 ->get();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Property Categories
-            |--------------------------------------------------------------------------
-            */
-
             $categories = DB::table('property_categories')
                 ->select([
                     'id',
@@ -260,12 +248,6 @@ class HomeController extends Controller
                 ])
                 ->orderBy('id')
                 ->get();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Testimonials
-            |--------------------------------------------------------------------------
-            */
 
             $testimonials = DB::table('reviews as r')
                 ->join(
@@ -293,7 +275,9 @@ class HomeController extends Controller
                 ->map(function ($review) {
 
                     $review->user_name = trim(
-                        $review->first_name . ' ' . $review->last_name
+                        $review->first_name
+                        . ' '
+                        . $review->last_name
                     );
 
                     unset(
@@ -304,21 +288,9 @@ class HomeController extends Controller
                     return $review;
                 });
 
-            /*
-            |--------------------------------------------------------------------------
-            | Statistics
-            |--------------------------------------------------------------------------
-            */
-
             $totalProperties = DB::table('properties')
                 ->whereNull('deleted_at')
                 ->count();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Response
-            |--------------------------------------------------------------------------
-            */
 
             return response()->json([
                 'success' => true,
@@ -331,6 +303,8 @@ class HomeController extends Controller
                     'featured_properties' => $featuredProperties,
 
                     'recommended_properties' => $recommendedProperties,
+
+                    'top_agent' => $topAgent,
 
                     'properties' => $homeProperties,
 
