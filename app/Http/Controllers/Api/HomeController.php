@@ -4,14 +4,45 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class HomeController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         try {
+
+            /*
+            |--------------------------------------------------------------------------
+            | User Location
+            |--------------------------------------------------------------------------
+            */
+
+            $request->validate([
+                'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+                'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+            ]);
+
+            $userLatitude = $request->filled('latitude')
+                ? (float) $request->input('latitude')
+                : null;
+
+            $userLongitude = $request->filled('longitude')
+                ? (float) $request->input('longitude')
+                : null;
+
+            $hasUserLocation =
+                $userLatitude !== null
+                && $userLongitude !== null;
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Properties
+            |--------------------------------------------------------------------------
+            */
 
             $properties = DB::table('properties as p')
                 ->whereNull('p.deleted_at')
@@ -39,13 +70,22 @@ class HomeController extends Controller
                 ->limit(100)
                 ->get();
 
-            $propertyIds = $properties->pluck('id')->values()->all();
+            $propertyIds = $properties
+                ->pluck('id')
+                ->values()
+                ->all();
 
             $images = collect();
             $locations = collect();
             $features = collect();
 
             if (!empty($propertyIds)) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Images
+                |--------------------------------------------------------------------------
+                */
 
                 $images = DB::table('property_images')
                     ->whereIn('property_id', $propertyIds)
@@ -60,6 +100,13 @@ class HomeController extends Controller
                     ->orderBy('display_order')
                     ->get()
                     ->groupBy('property_id');
+
+
+                /*
+                |--------------------------------------------------------------------------
+                | Locations
+                |--------------------------------------------------------------------------
+                */
 
                 $locations = DB::table('property_locations')
                     ->whereIn('property_id', $propertyIds)
@@ -77,14 +124,26 @@ class HomeController extends Controller
                     ->get()
                     ->keyBy('property_id');
 
-                $features = DB::table('property_feature_values as pfv')
+
+                /*
+                |--------------------------------------------------------------------------
+                | Features
+                |--------------------------------------------------------------------------
+                */
+
+                $features = DB::table(
+                    'property_feature_values as pfv'
+                )
                     ->join(
                         'property_features as pf',
                         'pf.id',
                         '=',
                         'pfv.feature_id'
                     )
-                    ->whereIn('pfv.property_id', $propertyIds)
+                    ->whereIn(
+                        'pfv.property_id',
+                        $propertyIds
+                    )
                     ->select([
                         'pfv.property_id',
                         'pf.id',
@@ -97,31 +156,62 @@ class HomeController extends Controller
                     ->groupBy('property_id');
             }
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Prepare Home Properties
+            |--------------------------------------------------------------------------
+            */
+
             $homeProperties = $properties->map(
-                function ($property) use ($images, $locations, $features) {
+                function ($property) use (
+                    $images,
+                    $locations,
+                    $features
+                ) {
 
                     $propertyId = $property->id;
 
                     $propertyImages = $images
-                        ->get($propertyId, collect())
+                        ->get(
+                            $propertyId,
+                            collect()
+                        )
                         ->values();
 
                     $property->primary_image =
-                        $propertyImages->firstWhere('is_primary', 1)
+                        $propertyImages->firstWhere(
+                            'is_primary',
+                            1
+                        )
                         ?? $propertyImages->first();
 
-                    $property->images = $propertyImages;
+                    $property->images =
+                        $propertyImages;
 
-                    $property->location = $locations
-                        ->get($propertyId);
+                    $property->location =
+                        $locations->get(
+                            $propertyId
+                        );
 
-                    $property->features = $features
-                        ->get($propertyId, collect())
-                        ->values();
+                    $property->features =
+                        $features
+                            ->get(
+                                $propertyId,
+                                collect()
+                            )
+                            ->values();
 
                     return $property;
                 }
             );
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Featured Properties
+            |--------------------------------------------------------------------------
+            */
 
             $featuredProperties = $homeProperties
                 ->filter(function ($property) {
@@ -129,15 +219,71 @@ class HomeController extends Controller
                 })
                 ->values();
 
-            $recommendedProperties = $homeProperties
-                ->filter(function ($property) {
-                    return (int) $property->is_featured === 0;
-                })
-                ->sortByDesc(function ($property) {
-                    return $property->listing_date;
-                })
-                ->take(12)
-                ->values();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Nearby & Recommended
+            |--------------------------------------------------------------------------
+            */
+
+            if ($hasUserLocation) {
+
+                $recommendedProperties = $homeProperties
+                    ->filter(function ($property) {
+                        return
+                            (int) $property->is_featured === 0
+                            && $property->location !== null
+                            && $property->location->latitude !== null
+                            && $property->location->longitude !== null;
+                    })
+                    ->map(function ($property) use (
+                        $userLatitude,
+                        $userLongitude
+                    ) {
+
+                        $propertyLatitude =
+                            (float) $property->location->latitude;
+
+                        $propertyLongitude =
+                            (float) $property->location->longitude;
+
+                        $property->distance_km =
+                            $this->calculateDistance(
+                                $userLatitude,
+                                $userLongitude,
+                                $propertyLatitude,
+                                $propertyLongitude
+                            );
+
+                        return $property;
+                    })
+                    ->sortBy('distance_km')
+                    ->take(12)
+                    ->values();
+
+                $recommendationMode = 'nearby';
+
+            } else {
+
+                $recommendedProperties = $homeProperties
+                    ->filter(function ($property) {
+                        return (int) $property->is_featured === 0;
+                    })
+                    ->sortByDesc(function ($property) {
+                        return $property->listing_date;
+                    })
+                    ->take(12)
+                    ->values();
+
+                $recommendationMode = 'recommended';
+            }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Popular Areas
+            |--------------------------------------------------------------------------
+            */
 
             $popularAreas = DB::table('neighborhoods as n')
                 ->join(
@@ -156,7 +302,9 @@ class HomeController extends Controller
                 ->select([
                     'n.id',
                     'n.name',
-                    DB::raw('COUNT(DISTINCT p.id) as properties_count'),
+                    DB::raw(
+                        'COUNT(DISTINCT p.id) as properties_count'
+                    ),
                 ])
                 ->groupBy(
                     'n.id',
@@ -165,6 +313,7 @@ class HomeController extends Controller
                 ->orderByDesc('properties_count')
                 ->limit(4)
                 ->get();
+
 
             /*
             |--------------------------------------------------------------------------
@@ -210,8 +359,10 @@ class HomeController extends Controller
             $topAgent = null;
 
             if ($topAgentRaw) {
+
                 $topAgent = [
-                    'user_id' => $topAgentRaw->user_id,
+                    'user_id' =>
+                        $topAgentRaw->user_id,
 
                     'name' => trim(
                         $topAgentRaw->first_name
@@ -219,19 +370,34 @@ class HomeController extends Controller
                         . $topAgentRaw->last_name
                     ),
 
-                    'phone' => $topAgentRaw->phone,
+                    'phone' =>
+                        $topAgentRaw->phone,
 
-                    'avatar_url' => $topAgentRaw->avatar_url,
+                    'avatar_url' =>
+                        $topAgentRaw->avatar_url,
 
-                    'is_manager' => (bool) $topAgentRaw->is_manager,
+                    'is_manager' =>
+                        (bool) $topAgentRaw->is_manager,
 
                     'agency' => [
-                        'id' => $topAgentRaw->agency_id,
-                        'name' => $topAgentRaw->agency_name,
-                        'logo_url' => $topAgentRaw->agency_logo,
+                        'id' =>
+                            $topAgentRaw->agency_id,
+
+                        'name' =>
+                            $topAgentRaw->agency_name,
+
+                        'logo_url' =>
+                            $topAgentRaw->agency_logo,
                     ],
                 ];
             }
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Property Types
+            |--------------------------------------------------------------------------
+            */
 
             $propertyTypes = DB::table('property_types')
                 ->select([
@@ -241,6 +407,13 @@ class HomeController extends Controller
                 ->orderBy('id')
                 ->get();
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Categories
+            |--------------------------------------------------------------------------
+            */
+
             $categories = DB::table('property_categories')
                 ->select([
                     'id',
@@ -249,6 +422,13 @@ class HomeController extends Controller
                 ->orderBy('id')
                 ->get();
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Testimonials
+            |--------------------------------------------------------------------------
+            */
+
             $testimonials = DB::table('reviews as r')
                 ->join(
                     'users as u',
@@ -256,7 +436,10 @@ class HomeController extends Controller
                     '=',
                     'r.user_id'
                 )
-                ->where('r.status', 'published')
+                ->where(
+                    'r.status',
+                    'published'
+                )
                 ->whereNull('r.deleted_at')
                 ->whereNull('u.deleted_at')
                 ->select([
@@ -288,34 +471,73 @@ class HomeController extends Controller
                     return $review;
                 });
 
+
+            /*
+            |--------------------------------------------------------------------------
+            | Stats
+            |--------------------------------------------------------------------------
+            */
+
             $totalProperties = DB::table('properties')
                 ->whereNull('deleted_at')
                 ->count();
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
 
             return response()->json([
                 'success' => true,
 
                 'data' => [
-                    'total' => $homeProperties->count(),
 
-                    'popular_areas' => $popularAreas,
+                    'total' =>
+                        $homeProperties->count(),
 
-                    'featured_properties' => $featuredProperties,
+                    'popular_areas' =>
+                        $popularAreas,
 
-                    'recommended_properties' => $recommendedProperties,
+                    'featured_properties' =>
+                        $featuredProperties,
 
-                    'top_agent' => $topAgent,
+                    'recommendation_mode' =>
+                        $recommendationMode,
 
-                    'properties' => $homeProperties,
+                    'user_location' =>
+                        $hasUserLocation
+                            ? [
+                                'latitude' =>
+                                    $userLatitude,
 
-                    'property_types' => $propertyTypes,
+                                'longitude' =>
+                                    $userLongitude,
+                            ]
+                            : null,
 
-                    'categories' => $categories,
+                    'recommended_properties' =>
+                        $recommendedProperties,
 
-                    'testimonials' => $testimonials,
+                    'top_agent' =>
+                        $topAgent,
+
+                    'properties' =>
+                        $homeProperties,
+
+                    'property_types' =>
+                        $propertyTypes,
+
+                    'categories' =>
+                        $categories,
+
+                    'testimonials' =>
+                        $testimonials,
 
                     'stats' => [
-                        'total_properties' => $totalProperties,
+                        'total_properties' =>
+                            $totalProperties,
                     ],
                 ],
             ]);
@@ -326,8 +548,51 @@ class HomeController extends Controller
 
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to load home page data',
+                'message' =>
+                    'Failed to load home page data',
             ], 500);
         }
+    }
+
+
+    /*
+    |--------------------------------------------------------------------------
+    | Calculate Distance - Haversine Formula
+    |--------------------------------------------------------------------------
+    */
+
+    private function calculateDistance(
+        float $latitude1,
+        float $longitude1,
+        float $latitude2,
+        float $longitude2
+    ): float {
+
+        $earthRadius = 6371;
+
+        $latitudeDifference =
+            deg2rad($latitude2 - $latitude1);
+
+        $longitudeDifference =
+            deg2rad($longitude2 - $longitude1);
+
+        $a =
+            sin($latitudeDifference / 2)
+            * sin($latitudeDifference / 2)
+            + cos(deg2rad($latitude1))
+            * cos(deg2rad($latitude2))
+            * sin($longitudeDifference / 2)
+            * sin($longitudeDifference / 2);
+
+        $c =
+            2 * atan2(
+                sqrt($a),
+                sqrt(1 - $a)
+            );
+
+        return round(
+            $earthRadius * $c,
+            2
+        );
     }
 }
