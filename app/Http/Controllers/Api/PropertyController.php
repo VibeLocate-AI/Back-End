@@ -53,7 +53,28 @@ class PropertyController extends Controller
             | Optional Filters
             |--------------------------------------------------------------------------
             */
+if ($request->filled('neighborhood_id')) {
 
+    $neighborhoodId = (int) $request->query(
+        'neighborhood_id'
+    );
+
+    $query->whereExists(function ($subQuery) use (
+        $neighborhoodId
+    ) {
+        $subQuery
+            ->select(DB::raw(1))
+            ->from('property_locations as pl')
+            ->whereColumn(
+                'pl.property_id',
+                'p.id'
+            )
+            ->where(
+                'pl.neighborhood_id',
+                $neighborhoodId
+            );
+    });
+}
             if ($request->filled('type_id')) {
                 $query->where(
                     'p.type_id',
