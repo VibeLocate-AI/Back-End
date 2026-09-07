@@ -357,6 +357,36 @@ if ($request->filled('neighborhood_id')) {
         try {
 
             $property = DB::table('properties as p')
+                ->leftJoin(
+                    'property_types as pt',
+                    'pt.id',
+                    '=',
+                    'p.type_id'
+                )
+                ->leftJoin(
+                    'property_categories as pc',
+                    'pc.id',
+                    '=',
+                    'p.category_id'
+                )
+                ->leftJoin(
+                    'property_status as ps',
+                    'ps.id',
+                    '=',
+                    'p.status_id'
+                )
+                ->leftJoin(
+                    'users as u',
+                    'u.id',
+                    '=',
+                    'p.owner_id'
+                )
+                ->leftJoin(
+                    'agencies as a',
+                    'a.id',
+                    '=',
+                    'p.agency_id'
+                )
                 ->where('p.id', $id)
                 ->whereNull('p.deleted_at')
                 ->select([
@@ -364,8 +394,11 @@ if ($request->filled('neighborhood_id')) {
                     'p.owner_id',
                     'p.agency_id',
                     'p.type_id',
+                    'pt.name as type_name',
                     'p.category_id',
+                    'pc.name as category_name',
                     'p.status_id',
+                    'ps.name as status_name',
                     'p.is_featured',
                     'p.title',
                     'p.slug',
@@ -384,6 +417,11 @@ if ($request->filled('neighborhood_id')) {
                     'p.listing_date',
                     'p.created_at',
                     'p.updated_at',
+                    'u.first_name as owner_first_name',
+                    'u.last_name as owner_last_name',
+                    'u.email as owner_email',
+                    'u.phone as owner_phone',
+                    'a.name as agency_name',
                 ])
                 ->first();
 
@@ -408,18 +446,25 @@ if ($request->filled('neighborhood_id')) {
                 ->get();
 
             $property->location = DB::table(
-                'property_locations'
+                'property_locations as pl'
             )
-                ->where('property_id', $property->id)
+                ->leftJoin(
+                    'neighborhoods as n',
+                    'n.id',
+                    '=',
+                    'pl.neighborhood_id'
+                )
+                ->where('pl.property_id', $property->id)
                 ->select([
-                    'id',
-                    'address_line_1',
-                    'address_line_2',
-                    'building_name',
-                    'latitude',
-                    'longitude',
-                    'neighborhood_id',
-                    'street_id',
+                    'pl.id',
+                    'pl.address_line_1',
+                    'pl.address_line_2',
+                    'pl.building_name',
+                    'pl.latitude',
+                    'pl.longitude',
+                    'pl.neighborhood_id',
+                    'n.name as neighborhood_name',
+                    'pl.street_id',
                 ])
                 ->first();
 
@@ -444,6 +489,55 @@ if ($request->filled('neighborhood_id')) {
                 ])
                 ->orderBy('pf.id')
                 ->get();
+
+            $property->owner = $property->owner_id
+                ? [
+                    'id' => $property->owner_id,
+                    'first_name' => $property->owner_first_name,
+                    'last_name' => $property->owner_last_name,
+                    'email' => $property->owner_email,
+                    'phone' => $property->owner_phone,
+                ]
+                : null;
+
+            $property->agency = $property->agency_id
+                ? [
+                    'id' => $property->agency_id,
+                    'name' => $property->agency_name,
+                ]
+                : null;
+
+            unset(
+                $property->owner_first_name,
+                $property->owner_last_name,
+                $property->owner_email,
+                $property->owner_phone,
+                $property->agency_name
+            );
+
+            $property->reviews = DB::table('reviews as r')
+                ->join('users as ru', 'ru.id', '=', 'r.user_id')
+                ->where('r.property_id', $property->id)
+                ->where('r.status', 'published')
+                ->whereNull('r.deleted_at')
+                ->select([
+                    'r.id',
+                    'r.rating',
+                    'r.comment',
+                    'r.created_at',
+                    'ru.id as user_id',
+                    'ru.first_name',
+                    'ru.last_name',
+                ])
+                ->orderByDesc('r.created_at')
+                ->get();
+
+            $property->reviews_summary = [
+                'average_rating' => $property->reviews->isNotEmpty()
+                    ? round((float) $property->reviews->avg('rating'), 1)
+                    : null,
+                'total_reviews' => $property->reviews->count(),
+            ];
 
             return response()->json([
                 'success' => true,
