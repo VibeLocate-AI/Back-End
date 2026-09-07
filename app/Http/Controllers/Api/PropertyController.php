@@ -28,6 +28,7 @@ class PropertyController extends Controller
                     'p.type_id',
                     'p.category_id',
                     'p.status_id',
+                    'p.is_featured',
                     'p.title',
                     'p.slug',
                     'p.description',
@@ -75,6 +76,14 @@ if ($request->filled('neighborhood_id')) {
             );
     });
 }
+
+            if ($request->filled('is_featured')) {
+                $query->where(
+                    'p.is_featured',
+                    (int) $request->query('is_featured')
+                );
+            }
+
             if ($request->filled('type_id')) {
                 $query->where(
                     'p.type_id',
@@ -282,6 +291,7 @@ if ($request->filled('neighborhood_id')) {
                     'p.type_id',
                     'p.category_id',
                     'p.status_id',
+                    'p.is_featured',
                     'p.title',
                     'p.slug',
                     'p.description',
