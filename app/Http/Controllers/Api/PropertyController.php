@@ -19,9 +19,60 @@ class PropertyController extends Controller
             $perPage = (int) $request->query('per_page', 20);
             $perPage = max(1, min($perPage, 100));
 
+            $sort = (string) $request->query('sort', '');
+            $hasNearbySort = $sort === 'nearby';
+
+            $latitude = $request->filled('latitude')
+                ? (float) $request->query('latitude')
+                : null;
+
+            $longitude = $request->filled('longitude')
+                ? (float) $request->query('longitude')
+                : null;
+
+            if ($hasNearbySort && ($latitude === null || $longitude === null)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Latitude and longitude are required for nearby sorting',
+                ], 422);
+            }
+
+            if (
+                $latitude !== null &&
+                ($latitude < -90 || $latitude > 90)
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Latitude must be between -90 and 90',
+                ], 422);
+            }
+
+            if (
+                $longitude !== null &&
+                ($longitude < -180 || $longitude > 180)
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Longitude must be between -180 and 180',
+                ], 422);
+            }
+
             $query = DB::table('properties as p')
-                ->whereNull('p.deleted_at')
-                ->select([
+                ->whereNull('p.deleted_at');
+
+            if ($hasNearbySort) {
+                $query
+                    ->join(
+                        'property_locations as nearby_pl',
+                        'nearby_pl.property_id',
+                        '=',
+                        'p.id'
+                    )
+                    ->whereNotNull('nearby_pl.latitude')
+                    ->whereNotNull('nearby_pl.longitude');
+            }
+
+            $query->select([
                     'p.id',
                     'p.owner_id',
                     'p.agency_id',
@@ -46,8 +97,25 @@ class PropertyController extends Controller
                     'p.listing_date',
                     'p.created_at',
                     'p.updated_at',
-                ])
-                ->orderByDesc('p.id');
+                ]);
+
+            if ($hasNearbySort) {
+                $distanceSql = '6371 * ACOS(LEAST(1, GREATEST(-1, '
+                    . 'COS(RADIANS(?)) * COS(RADIANS(nearby_pl.latitude)) '
+                    . '* COS(RADIANS(nearby_pl.longitude) - RADIANS(?)) '
+                    . '+ SIN(RADIANS(?)) * SIN(RADIANS(nearby_pl.latitude))'
+                    . ')))';
+
+                $query
+                    ->selectRaw(
+                        $distanceSql . ' AS distance_km',
+                        [$latitude, $longitude, $latitude]
+                    )
+                    ->orderBy('distance_km')
+                    ->orderByDesc('p.id');
+            } else {
+                $query->orderByDesc('p.id');
+            }
 
             /*
             |--------------------------------------------------------------------------
@@ -245,6 +313,13 @@ if ($request->filled('neighborhood_id')) {
                 $property->features = $features
                     ->get($propertyId, collect())
                     ->values();
+
+                if (isset($property->distance_km)) {
+                    $property->distance_km = round(
+                        (float) $property->distance_km,
+                        2
+                    );
+                }
 
                 return $property;
             });
