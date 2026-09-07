@@ -279,40 +279,94 @@ class HomeController extends Controller
             }
 
 
-            /*
-            |--------------------------------------------------------------------------
-            | Popular Areas
-            |--------------------------------------------------------------------------
-            */
+           /*
+|--------------------------------------------------------------------------
+| Popular Areas
+|--------------------------------------------------------------------------
+*/
 
-            $popularAreas = DB::table('neighborhoods as n')
-                ->join(
-                    'property_locations as pl',
-                    'pl.neighborhood_id',
-                    '=',
-                    'n.id'
-                )
-                ->join(
-                    'properties as p',
-                    'p.id',
-                    '=',
-                    'pl.property_id'
-                )
-                ->whereNull('p.deleted_at')
-                ->select([
-                    'n.id',
-                    'n.name',
-                    DB::raw(
-                        'COUNT(DISTINCT p.id) as properties_count'
-                    ),
-                ])
-                ->groupBy(
-                    'n.id',
-                    'n.name'
-                )
-                ->orderByDesc('properties_count')
-                ->limit(4)
-                ->get();
+$popularAreas = DB::table('neighborhoods as n')
+    ->join(
+        'property_locations as pl',
+        'pl.neighborhood_id',
+        '=',
+        'n.id'
+    )
+    ->join(
+        'properties as p',
+        'p.id',
+        '=',
+        'pl.property_id'
+    )
+    ->whereNull('p.deleted_at')
+    ->select([
+        'n.id',
+        'n.name',
+        DB::raw(
+            'COUNT(DISTINCT p.id) as properties_count'
+        ),
+    ])
+    ->groupBy(
+        'n.id',
+        'n.name'
+    )
+    ->orderByDesc('properties_count')
+    ->limit(4)
+    ->get();
+
+$popularAreaIds = $popularAreas
+    ->pluck('id')
+    ->values()
+    ->all();
+
+$popularAreaImages = collect();
+
+if (!empty($popularAreaIds)) {
+
+    $popularAreaImages = DB::table('property_locations as pl')
+        ->join(
+            'properties as p',
+            'p.id',
+            '=',
+            'pl.property_id'
+        )
+        ->join(
+            'property_images as pi',
+            'pi.property_id',
+            '=',
+            'p.id'
+        )
+        ->whereIn(
+            'pl.neighborhood_id',
+            $popularAreaIds
+        )
+        ->whereNull('p.deleted_at')
+        ->where('pi.is_primary', 1)
+        ->select([
+            'pl.neighborhood_id',
+            'p.id as property_id',
+            'pi.image_url',
+        ])
+        ->orderBy('p.id')
+        ->get()
+        ->groupBy('neighborhood_id');
+}
+
+$popularAreas = $popularAreas
+    ->map(function ($area) use ($popularAreaImages) {
+
+        $areaImage = $popularAreaImages
+            ->get(
+                $area->id,
+                collect()
+            )
+            ->first();
+
+        $area->image_url =
+            $areaImage?->image_url;
+
+        return $area;
+    });
 
 
             /*
