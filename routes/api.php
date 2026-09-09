@@ -1,5 +1,5 @@
 <?php
-
+use App\Http\Controllers\Api\MapController;
 use App\Http\Controllers\Api\AIContextualSearchController;
 use App\Http\Controllers\Api\ChangePasswordController;
 use App\Http\Controllers\Api\CompleteProfileController;
@@ -138,7 +138,13 @@ Route::get(
     '/properties/{id}',
     [PropertyController::class, 'show']
 );
+/*
+|--------------------------------------------------------------------------
+| Map
+|--------------------------------------------------------------------------
+*/
 
+Route::get('/map', [MapController::class, 'index']);
 
 /*
 |--------------------------------------------------------------------------
