@@ -21,30 +21,7 @@ class ProfileController extends Controller
     {
         $user = $request->attributes->get('auth_user');
 
-        $profile = DB::table('users as u')
-            ->leftJoin('user_profiles as up', 'up.user_id', '=', 'u.id')
-            ->where('u.id', $user['id'])
-            ->select(
-                'u.id',
-                DB::raw(
-                    "TRIM(CONCAT(u.first_name, ' ', u.last_name)) as full_name"
-                ),
-                'u.email',
-                'u.phone',
-                'u.status',
-                'u.email_verified_at',
-                'u.created_at',
-                'up.avatar_url',
-                'up.bio',
-                'up.city',
-                'up.country',
-                'up.preferred_language',
-                'up.currency',
-                'up.nationality',
-                'up.date_of_birth',
-                'up.gender'
-            )
-            ->first();
+        $profile = $this->getProfile($user['id']);
 
         if (!$profile) {
             return response()->json([
@@ -61,7 +38,7 @@ class ProfileController extends Controller
 
     /*
     |--------------------------------------------------------------------------
-    | Update Profile Data
+    | Update Profile
     |--------------------------------------------------------------------------
     */
 
@@ -92,35 +69,17 @@ class ProfileController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Full Name
-        |--------------------------------------------------------------------------
-        */
-
-        $currentFullName = trim(
-            $currentUser->first_name . ' ' . $currentUser->last_name
-        );
-
-        $fullName = $request->exists('full_name')
-            ? trim((string) $request->input('full_name'))
-            : $currentFullName;
-
-        if ($fullName === '') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Full name is required'
-            ], 422);
-        }
-
-        $nameParts = preg_split('/\s+/', $fullName, 2);
-
-        $firstName = $nameParts[0] ?? '';
-        $lastName = $nameParts[1] ?? '';
-
-        /*
-        |--------------------------------------------------------------------------
         | User Data
         |--------------------------------------------------------------------------
         */
+
+        $firstName = $request->exists('first_name')
+            ? trim((string) $request->input('first_name'))
+            : $currentUser->first_name;
+
+        $lastName = $request->exists('last_name')
+            ? trim((string) $request->input('last_name'))
+            : $currentUser->last_name;
 
         $email = $request->exists('email')
             ? strtolower(trim((string) $request->input('email')))
@@ -173,6 +132,20 @@ class ProfileController extends Controller
         | Validation
         |--------------------------------------------------------------------------
         */
+
+        if ($firstName === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'First name is required'
+            ], 422);
+        }
+
+        if ($lastName === '') {
+            return response()->json([
+                'success' => false,
+                'message' => 'Last name is required'
+            ], 422);
+        }
 
         if (
             $email === '' ||
@@ -311,17 +284,14 @@ class ProfileController extends Controller
                 $profileData['user_id'] = $user['id'];
                 $profileData['created_at'] = now();
 
-                DB::table('user_profiles')
-                    ->insert($profileData);
+                DB::table('user_profiles')->insert($profileData);
             }
         });
-
-        $updatedProfile = $this->getProfile($user['id']);
 
         return response()->json([
             'success' => true,
             'message' => 'Profile updated successfully',
-            'profile' => $updatedProfile
+            'profile' => $this->getProfile($user['id'])
         ]);
     }
 
@@ -364,10 +334,13 @@ class ProfileController extends Controller
             $cloudinaryUrl = env('CLOUDINARY_URL');
 
             if (!$cloudinaryUrl) {
-                Log::error('Cloudinary profile photo upload failed', [
-                    'user_id' => $user['id'],
-                    'error' => 'CLOUDINARY_URL is not configured',
-                ]);
+                Log::error(
+                    'Cloudinary profile photo upload failed',
+                    [
+                        'user_id' => $user['id'],
+                        'error' => 'CLOUDINARY_URL is not configured',
+                    ]
+                );
 
                 return response()->json([
                     'success' => false,
@@ -390,10 +363,13 @@ class ProfileController extends Controller
             $avatarUrl = $uploadResult['secure_url'] ?? null;
 
             if (!$avatarUrl) {
-                Log::error('Cloudinary profile photo upload failed', [
-                    'user_id' => $user['id'],
-                    'error' => 'Cloudinary response did not contain secure_url',
-                ]);
+                Log::error(
+                    'Cloudinary profile photo upload failed',
+                    [
+                        'user_id' => $user['id'],
+                        'error' => 'Cloudinary response did not contain secure_url',
+                    ]
+                );
 
                 return response()->json([
                     'success' => false,
@@ -413,15 +389,14 @@ class ProfileController extends Controller
                         'updated_at' => now(),
                     ]);
             } else {
-                DB::table('user_profiles')
-                    ->insert([
-                        'user_id' => $user['id'],
-                        'avatar_url' => $avatarUrl,
-                        'preferred_language' => 'en',
-                        'currency' => 'AED',
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
+                DB::table('user_profiles')->insert([
+                    'user_id' => $user['id'],
+                    'avatar_url' => $avatarUrl,
+                    'preferred_language' => 'en',
+                    'currency' => 'AED',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
             }
 
             return response()->json([
@@ -432,11 +407,13 @@ class ProfileController extends Controller
             ]);
 
         } catch (Throwable $e) {
-
-            Log::error('Cloudinary profile photo upload failed', [
-                'user_id' => $user['id'],
-                'error' => $e->getMessage(),
-            ]);
+            Log::error(
+                'Cloudinary profile photo upload failed',
+                [
+                    'user_id' => $user['id'],
+                    'error' => $e->getMessage(),
+                ]
+            );
 
             return response()->json([
                 'success' => false,
@@ -454,13 +431,17 @@ class ProfileController extends Controller
     private function getProfile(int $userId)
     {
         return DB::table('users as u')
-            ->leftJoin('user_profiles as up', 'up.user_id', '=', 'u.id')
+            ->leftJoin(
+                'user_profiles as up',
+                'up.user_id',
+                '=',
+                'u.id'
+            )
             ->where('u.id', $userId)
             ->select(
                 'u.id',
-                DB::raw(
-                    "TRIM(CONCAT(u.first_name, ' ', u.last_name)) as full_name"
-                ),
+                'u.first_name',
+                'u.last_name',
                 'u.email',
                 'u.phone',
                 'u.status',
