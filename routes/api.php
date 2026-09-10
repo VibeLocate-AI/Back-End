@@ -1,4 +1,5 @@
 <?php
+
 use App\Http\Controllers\Api\MapController;
 use App\Http\Controllers\Api\AIContextualSearchController;
 use App\Http\Controllers\Api\ChangePasswordController;
@@ -124,9 +125,6 @@ Route::post(
 |--------------------------------------------------------------------------
 | Properties
 |--------------------------------------------------------------------------
-|
-| Public routes for browsing property listings.
-|
 */
 
 Route::get(
@@ -138,13 +136,19 @@ Route::get(
     '/properties/{id}',
     [PropertyController::class, 'show']
 );
+
+
 /*
 |--------------------------------------------------------------------------
 | Map
 |--------------------------------------------------------------------------
 */
 
-Route::get('/map', [MapController::class, 'index']);
+Route::get(
+    '/map',
+    [MapController::class, 'index']
+);
+
 
 /*
 |--------------------------------------------------------------------------
@@ -162,9 +166,6 @@ Route::get(
 |--------------------------------------------------------------------------
 | AI Contextual Search
 |--------------------------------------------------------------------------
-|
-| Public contextual property search used from the Home page.
-|
 */
 
 Route::post(
@@ -196,6 +197,15 @@ Route::middleware('jwt')->group(function () {
         ['put', 'patch'],
         '/profile',
         [ProfileController::class, 'update']
+    );
+
+    /*
+    | Upload / Change Profile Photo
+    */
+
+    Route::post(
+        '/profile/avatar',
+        [ProfileController::class, 'updateAvatar']
     );
 
     Route::match(
@@ -253,6 +263,8 @@ Route::middleware('jwt')->group(function () {
     Route::delete(
         '/two-factor',
         [TwoFactorController::class, 'destroy']
+   
+   
     );
-    
-});
+}
+);
