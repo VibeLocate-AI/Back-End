@@ -43,43 +43,40 @@ class HomeController extends Controller
             | Properties
             |--------------------------------------------------------------------------
             */
+$properties = DB::table('properties as p')
+    ->whereNull('p.deleted_at')
+    ->select([
+        'p.id',
+        'p.type_id',
+        'p.category_id',
+        'p.status_id',
+        'p.is_featured',
+        'p.title',
+        'p.slug',
+        'p.description',
+        'p.price',
+        'p.currency',
+        'p.rent_frequency',
+        'p.area_sqft',
+        'p.bedrooms',
+        'p.bathrooms',
+        'p.is_furnished',
+        'p.availability_date',
+        'p.listing_date',
+    ])
+    ->orderBy('p.id')
+    ->get();
 
-            $properties = DB::table('properties as p')
-                ->whereNull('p.deleted_at')
-                ->where('p.slug', 'like', 'demo-dubai-%')
-                ->select([
-                    'p.id',
-                    'p.type_id',
-                    'p.category_id',
-                    'p.status_id',
-                    'p.is_featured',
-                    'p.title',
-                    'p.slug',
-                    'p.description',
-                    'p.price',
-                    'p.currency',
-                    'p.rent_frequency',
-                    'p.area_sqft',
-                    'p.bedrooms',
-                    'p.bathrooms',
-                    'p.is_furnished',
-                    'p.availability_date',
-                    'p.listing_date',
-                ])
-                ->orderBy('p.id')
-                ->limit(100)
-                ->get();
+$propertyIds = $properties
+    ->pluck('id')
+    ->values()
+    ->all();
 
-            $propertyIds = $properties
-                ->pluck('id')
-                ->values()
-                ->all();
+$images = collect();
+$locations = collect();
+$features = collect();
 
-            $images = collect();
-            $locations = collect();
-            $features = collect();
-
-            if (!empty($propertyIds)) {
+if (!empty($propertyIds)) {
 
                 /*
                 |--------------------------------------------------------------------------
