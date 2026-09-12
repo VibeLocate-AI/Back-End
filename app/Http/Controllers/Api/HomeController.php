@@ -20,10 +20,13 @@ class HomeController extends Controller
             |--------------------------------------------------------------------------
             */
 
-            $request->validate([
-                'latitude' => ['nullable', 'numeric', 'between:-90,90'],
-                'longitude' => ['nullable', 'numeric', 'between:-180,180'],
-            ]);
+           $request->validate([
+    'latitude' => ['nullable', 'numeric', 'between:-90,90'],
+    'longitude' => ['nullable', 'numeric', 'between:-180,180'],
+    'lang' => ['nullable', 'in:en,ar'],
+]);
+
+$language = $request->input('lang', 'en');
 
             $userLatitude = $request->filled('latitude')
                 ? (float) $request->input('latitude')
@@ -75,7 +78,7 @@ $propertyIds = $properties
 $images = collect();
 $locations = collect();
 $features = collect();
-
+$translations = collect();
 if (!empty($propertyIds)) {
 
                 /*
@@ -120,7 +123,24 @@ if (!empty($propertyIds)) {
                     ])
                     ->get()
                     ->keyBy('property_id');
+/*
+|--------------------------------------------------------------------------
+| Arabic Translations
+|--------------------------------------------------------------------------
+*/
 
+if ($language === 'ar') {
+    $translations = DB::table('property_translations')
+        ->whereIn('property_id', $propertyIds)
+        ->where('language_code', 'ar')
+        ->select([
+            'property_id',
+            'title',
+            'description',
+        ])
+        ->get()
+        ->keyBy('property_id');
+}
 
                 /*
                 |--------------------------------------------------------------------------
@@ -160,14 +180,25 @@ if (!empty($propertyIds)) {
             |--------------------------------------------------------------------------
             */
 
-            $homeProperties = $properties->map(
-                function ($property) use (
-                    $images,
-                    $locations,
-                    $features
-                ) {
+           $homeProperties = $properties->map(
+    function ($property) use (
+        $images,
+        $locations,
+        $features,
+        $translations,
+        $language
+    ) {
 
-                    $propertyId = $property->id;
+        $propertyId = $property->id;
+
+        if ($language === 'ar') {
+            $translation = $translations->get($propertyId);
+
+            if ($translation) {
+                $property->title = $translation->title;
+                $property->description = $translation->description;
+            }
+        }
 
                     $propertyImages = $images
                         ->get(
@@ -545,11 +576,14 @@ $popularAreas = $popularAreas
 
                 'data' => [
 
-                    'total' =>
-                        $homeProperties->count(),
+                   'total' =>
+    $homeProperties->count(),
 
-                    'popular_areas' =>
-                        $popularAreas,
+'language' =>
+    $language,
+
+'popular_areas' =>
+    $popularAreas,
 
                     'featured_properties' =>
                         $featuredProperties,
