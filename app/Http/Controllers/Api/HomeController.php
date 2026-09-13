@@ -79,6 +79,7 @@ $images = collect();
 $locations = collect();
 $features = collect();
 $translations = collect();
+$locationTranslations = collect();
 if (!empty($propertyIds)) {
 
                 /*
@@ -128,8 +129,9 @@ if (!empty($propertyIds)) {
 | Arabic Translations
 |--------------------------------------------------------------------------
 */
-
 if ($language === 'ar') {
+
+    // Property title + description translations
     $translations = DB::table('property_translations')
         ->whereIn('property_id', $propertyIds)
         ->where('language_code', 'ar')
@@ -140,6 +142,37 @@ if ($language === 'ar') {
         ])
         ->get()
         ->keyBy('property_id');
+
+
+    // Property location translations
+    $locationIds = $locations
+        ->pluck('id')
+        ->filter()
+        ->values()
+        ->all();
+
+    if (!empty($locationIds)) {
+
+        $locationTranslations = DB::table(
+            'property_location_translations'
+        )
+            ->whereIn(
+                'property_location_id',
+                $locationIds
+            )
+            ->where(
+                'language_code',
+                'ar'
+            )
+            ->select([
+                'property_location_id',
+                'address_line_1',
+                'address_line_2',
+                'building_name',
+            ])
+            ->get()
+            ->keyBy('property_location_id');
+    }
 }
 
                 /*
@@ -186,6 +219,7 @@ if ($language === 'ar') {
         $locations,
         $features,
         $translations,
+        $locationTranslations,
         $language
     ) {
 
@@ -221,6 +255,17 @@ if ($language === 'ar') {
                         $locations->get(
                             $propertyId
                         );
+
+                    if ($language === 'ar' && $property->location) {
+                        $locationTranslation = $locationTranslations
+                            ->get($property->location->id);
+
+                        if ($locationTranslation) {
+                            $property->location->address_line_1 = $locationTranslation->address_line_1;
+                            $property->location->address_line_2 = $locationTranslation->address_line_2;
+                            $property->location->building_name = $locationTranslation->building_name;
+                        }
+                    }
 
                     $property->features =
                         $features
@@ -380,8 +425,27 @@ if (!empty($popularAreaIds)) {
         ->groupBy('neighborhood_id');
 }
 
+$popularAreaTranslations = collect();
+
+if ($language === 'ar' && !empty($popularAreaIds)) {
+    $popularAreaTranslations = DB::table('neighborhood_translations')
+        ->whereIn('neighborhood_id', $popularAreaIds)
+        ->where('language_code', 'ar')
+        ->select(['neighborhood_id', 'name'])
+        ->get()
+        ->keyBy('neighborhood_id');
+}
+
 $popularAreas = $popularAreas
-    ->map(function ($area) use ($popularAreaImages) {
+    ->map(function ($area) use ($popularAreaImages, $popularAreaTranslations, $language) {
+
+        if ($language === 'ar') {
+            $areaTranslation = $popularAreaTranslations->get($area->id);
+
+            if ($areaTranslation) {
+                $area->name = $areaTranslation->name;
+            }
+        }
 
         $areaImage = $popularAreaImages
             ->get(
@@ -481,12 +545,16 @@ $popularAreas = $popularAreas
             |--------------------------------------------------------------------------
             */
 
-            $propertyTypes = DB::table('property_types')
+            $propertyTypes = DB::table('property_types as pt')
+                ->leftJoin('property_type_translations as ptt', function ($join) use ($language) {
+                    $join->on('ptt.property_type_id', '=', 'pt.id')
+                        ->where('ptt.language_code', '=', $language);
+                })
                 ->select([
-                    'id',
-                    'name',
+                    'pt.id',
+                    DB::raw("CASE WHEN '{$language}' = 'ar' THEN COALESCE(ptt.name, pt.name) ELSE pt.name END as name"),
                 ])
-                ->orderBy('id')
+                ->orderBy('pt.id')
                 ->get();
 
 
@@ -496,12 +564,16 @@ $popularAreas = $popularAreas
             |--------------------------------------------------------------------------
             */
 
-            $categories = DB::table('property_categories')
+            $categories = DB::table('property_categories as pc')
+                ->leftJoin('property_category_translations as pct', function ($join) use ($language) {
+                    $join->on('pct.property_category_id', '=', 'pc.id')
+                        ->where('pct.language_code', '=', $language);
+                })
                 ->select([
-                    'id',
-                    'name',
+                    'pc.id',
+                    DB::raw("CASE WHEN '{$language}' = 'ar' THEN COALESCE(pct.name, pc.name) ELSE pc.name END as name"),
                 ])
-                ->orderBy('id')
+                ->orderBy('pc.id')
                 ->get();
 
 
