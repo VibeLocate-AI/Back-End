@@ -17,6 +17,8 @@ use App\Http\Controllers\Api\TwoFactorController;
 use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\PropertyController;
+
 
 //home
 use App\Http\Controllers\Api\HomeController;
@@ -229,3 +231,15 @@ Route::get('/home', function () {
 
 /*Home*/
     Route::get('/home', [HomeController::class, 'index']);
+
+
+    /*Profile Edit*/
+    Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/profile', [ProfileController::class, 'show']);
+    Route::put('/profile', [ProfileController::class, 'update']);
+
+     Route::post('/properties', [
+        PropertyController::class,
+        'store'
+    ]);
+});
