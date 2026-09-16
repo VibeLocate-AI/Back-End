@@ -181,6 +181,7 @@ Route::post(
 */
 
 Route::middleware('jwt')->group(function () {
+    Route::post('/properties', [PropertyController::class, 'store']);
 
     /*
     |--------------------------------------------------------------------------

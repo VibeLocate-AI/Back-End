@@ -3,9 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use Cloudinary\Cloudinary;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Throwable;
 
 class PropertyController extends Controller
@@ -72,33 +75,34 @@ class PropertyController extends Controller
                     ->whereNotNull('nearby_pl.longitude');
             }
 
-            $query->select([
-                    'p.id',
-                    'p.owner_id',
-                    'p.agency_id',
-                    'p.type_id',
-                    'p.category_id',
-                    'p.status_id',
-                    'p.is_featured',
-                    'p.title',
-                    'p.slug',
-                    'p.description',
-                    'p.price',
-                    'p.currency',
-                    'p.rent_frequency',
-                    'p.area_sqft',
-                    'p.bedrooms',
-                    'p.bathrooms',
-                    'p.floor_number',
-                    'p.total_floors',
-                    'p.year_built',
-                    'p.is_furnished',
-                    'p.availability_date',
-                    'p.listing_date',
-                    'p.created_at',
-                    'p.updated_at',
-                ]);
-
+         $query->select([
+    'p.id',
+    'p.owner_id',
+    'p.agency_id',
+    'p.type_id',
+    'p.category_id',
+    'p.status_id',
+    'p.property_condition',
+    'p.is_featured',
+    'p.title',
+    'p.slug',
+    'p.description',
+    'p.virtual_tour_url',
+    'p.price',
+    'p.currency',
+    'p.rent_frequency',
+    'p.area_sqft',
+    'p.bedrooms',
+    'p.bathrooms',
+    'p.floor_number',
+    'p.total_floors',
+    'p.year_built',
+    'p.is_furnished',
+    'p.availability_date',
+    'p.listing_date',
+    'p.created_at',
+    'p.updated_at',
+]);
             if ($hasNearbySort) {
                 $distanceSql = '6371 * ACOS(LEAST(1, GREATEST(-1, '
                     . 'COS(RADIANS(?)) * COS(RADIANS(nearby_pl.latitude)) '
@@ -348,7 +352,565 @@ if ($request->filled('neighborhood_id')) {
         }
     }
 
+/**
+ * Create a new property.
+ */
+public function store(Request $request): JsonResponse
+{
+    $user = $request->attributes->get('auth_user');
 
+    if (!$user || empty($user['id'])) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Unauthenticated',
+        ], 401);
+    }
+
+    $validator = validator($request->all(), [
+        'title' => 'required|string|max:255',
+        'type_id' => 'required|integer|exists:property_types,id',
+
+        'listing_type' => 'required|in:sale,rent',
+        'price' => 'required|numeric|min:0',
+        'rent_frequency' => 'nullable|in:monthly,yearly',
+
+        'description' => 'required|string',
+        'virtual_tour_url' => 'nullable|url|max:500',
+
+        'neighborhood_id' => 'required|integer|exists:neighborhoods,id',
+
+        'address_line_1' => 'required|string|max:255',
+        'address_line_2' => 'nullable|string|max:255',
+        'building_name' => 'nullable|string|max:150',
+
+        'latitude' => 'required|numeric|between:-90,90',
+        'longitude' => 'required|numeric|between:-180,180',
+
+        'area_sqft' => 'required|numeric|min:0.01',
+        'bedrooms' => 'required|integer|min:0',
+        'bathrooms' => 'required|integer|min:0',
+
+        'property_condition' => 'required|in:ready,off_plan',
+
+        'features' => 'nullable|array',
+        'features.*' => 'integer|distinct|exists:property_features,id',
+
+        'cover_image' => [
+            'required',
+            'file',
+            'image',
+            'mimes:jpg,jpeg,png,webp',
+            'max:10240',
+        ],
+
+        'gallery_images' => 'nullable|array|max:20',
+
+        'gallery_images.*' => [
+            'file',
+            'image',
+            'mimes:jpg,jpeg,png,webp',
+            'max:10240',
+        ],
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid property data',
+            'errors' => $validator->errors(),
+        ], 422);
+    }
+
+    $ownerId = (int) $user['id'];
+
+    /*
+    |--------------------------------------------------------------------------
+    | Get Listing Category
+    |--------------------------------------------------------------------------
+    */
+
+    $categoryName = $request->input('listing_type') === 'sale'
+        ? 'For Sale'
+        : 'For Rent';
+
+    $categoryId = DB::table('property_categories')
+        ->where('name', $categoryName)
+        ->value('id');
+
+    if (!$categoryId) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Property category not found',
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Default Property Status
+    |--------------------------------------------------------------------------
+    */
+
+    $statusId = DB::table('property_status')
+        ->where('name', 'Active')
+        ->value('id');
+
+    if (!$statusId) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Active property status not found',
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Get User Agency
+    |--------------------------------------------------------------------------
+    */
+
+    $agencyId = DB::table('agency_agents')
+        ->where('user_id', $ownerId)
+        ->value('agency_id');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cloudinary
+    |--------------------------------------------------------------------------
+    */
+
+    $cloudinaryUrl = env('CLOUDINARY_URL');
+
+    if (!$cloudinaryUrl) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Cloudinary is not configured',
+        ], 500);
+    }
+
+    $cloudinary = new Cloudinary($cloudinaryUrl);
+
+    $uploadedPublicIds = [];
+
+    try {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Upload Cover Image
+        |--------------------------------------------------------------------------
+        */
+
+        $coverUpload = $cloudinary
+            ->uploadApi()
+            ->upload(
+                $request->file('cover_image')->getRealPath(),
+                [
+                    'folder' => 'vibelocate/property-images',
+                    'resource_type' => 'image',
+                ]
+            );
+
+        $coverUrl = $coverUpload['secure_url'] ?? null;
+
+        if (!$coverUrl) {
+            throw new \RuntimeException(
+                'Cover image upload failed'
+            );
+        }
+
+        if (!empty($coverUpload['public_id'])) {
+            $uploadedPublicIds[] =
+                $coverUpload['public_id'];
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Upload Gallery Images
+        |--------------------------------------------------------------------------
+        */
+
+        $galleryUrls = [];
+
+        foreach (
+            $request->file('gallery_images', [])
+            as $galleryImage
+        ) {
+            $upload = $cloudinary
+                ->uploadApi()
+                ->upload(
+                    $galleryImage->getRealPath(),
+                    [
+                        'folder' => 'vibelocate/property-images',
+                        'resource_type' => 'image',
+                    ]
+                );
+
+            $galleryUrl =
+                $upload['secure_url'] ?? null;
+
+            if (!$galleryUrl) {
+                throw new \RuntimeException(
+                    'Gallery image upload failed'
+                );
+            }
+
+            $galleryUrls[] = $galleryUrl;
+
+            if (!empty($upload['public_id'])) {
+                $uploadedPublicIds[] =
+                    $upload['public_id'];
+            }
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save Everything In Transaction
+        |--------------------------------------------------------------------------
+        */
+
+        $propertyId = DB::transaction(
+            function () use (
+                $request,
+                $ownerId,
+                $agencyId,
+                $categoryId,
+                $statusId,
+                $coverUrl,
+                $galleryUrls
+            ) {
+
+                /*
+                |--------------------------------------------------------------------------
+                | Generate Slug
+                |--------------------------------------------------------------------------
+                */
+
+                $slugBase = Str::slug(
+                    $request->input('title')
+                );
+
+                if (!$slugBase) {
+                    $slugBase = 'property';
+                }
+
+                $slug = $slugBase
+                    . '-'
+                    . Str::lower(Str::random(8));
+
+                /*
+                |--------------------------------------------------------------------------
+                | Add Property
+                |--------------------------------------------------------------------------
+                */
+
+                $propertyId = DB::table('properties')
+                    ->insertGetId([
+                        'owner_id' => $ownerId,
+
+                        'agency_id' =>
+                            $agencyId ?: null,
+
+                        'type_id' =>
+                            (int) $request->input(
+                                'type_id'
+                            ),
+
+                        'category_id' =>
+                            (int) $categoryId,
+
+                        'status_id' =>
+                            (int) $statusId,
+
+                        'property_condition' =>
+                            $request->input(
+                                'property_condition'
+                            ),
+
+                        'is_featured' => 0,
+
+                        'title' =>
+                            trim(
+                                $request->input('title')
+                            ),
+
+                        'slug' => $slug,
+
+                        'description' =>
+                            trim(
+                                $request->input(
+                                    'description'
+                                )
+                            ),
+
+                        'virtual_tour_url' =>
+                            $request->filled(
+                                'virtual_tour_url'
+                            )
+                                ? trim(
+                                    $request->input(
+                                        'virtual_tour_url'
+                                    )
+                                )
+                                : null,
+
+                        'price' =>
+                            $request->input('price'),
+
+                        'currency' => 'AED',
+
+                        'rent_frequency' =>
+                            $request->input(
+                                'listing_type'
+                            ) === 'rent'
+                                ? (
+                                    $request->input(
+                                        'rent_frequency'
+                                    ) ?: 'yearly'
+                                )
+                                : 'yearly',
+
+                        'area_sqft' =>
+                            $request->input(
+                                'area_sqft'
+                            ),
+
+                        'bedrooms' =>
+                            (int) $request->input(
+                                'bedrooms'
+                            ),
+
+                        'bathrooms' =>
+                            (int) $request->input(
+                                'bathrooms'
+                            ),
+
+                        'is_furnished' =>
+                            'unfurnished',
+
+                        'availability_date' =>
+                            now()->toDateString(),
+
+                        'listing_date' => now(),
+
+                        'created_at' => now(),
+
+                        'updated_at' => now(),
+                    ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Add Location
+                |--------------------------------------------------------------------------
+                */
+
+                $latitude =
+                    (float) $request->input(
+                        'latitude'
+                    );
+
+                $longitude =
+                    (float) $request->input(
+                        'longitude'
+                    );
+
+                DB::table('property_locations')
+                    ->insert([
+                        'property_id' =>
+                            $propertyId,
+
+                        'street_id' => null,
+
+                        'neighborhood_id' =>
+                            (int) $request->input(
+                                'neighborhood_id'
+                            ),
+
+                        'address_line_1' =>
+                            trim(
+                                $request->input(
+                                    'address_line_1'
+                                )
+                            ),
+
+                        'address_line_2' =>
+                            $request->filled(
+                                'address_line_2'
+                            )
+                                ? trim(
+                                    $request->input(
+                                        'address_line_2'
+                                    )
+                                )
+                                : null,
+
+                        'building_name' =>
+                            $request->filled(
+                                'building_name'
+                            )
+                                ? trim(
+                                    $request->input(
+                                        'building_name'
+                                    )
+                                )
+                                : null,
+
+                        'latitude' =>
+                            $latitude,
+
+                        'longitude' =>
+                            $longitude,
+
+                        'coordinates' =>
+                            DB::raw(
+                                sprintf(
+                                    'POINT(%F, %F)',
+                                    $longitude,
+                                    $latitude
+                                )
+                            ),
+
+                        'created_at' => now(),
+
+                        'updated_at' => now(),
+                    ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Cover Image
+                |--------------------------------------------------------------------------
+                */
+
+                DB::table('property_images')
+                    ->insert([
+                        'property_id' =>
+                            $propertyId,
+
+                        'image_url' =>
+                            $coverUrl,
+
+                        'is_primary' => 1,
+
+                        'display_order' => 0,
+
+                        'created_at' => now(),
+                    ]);
+
+                /*
+                |--------------------------------------------------------------------------
+                | Gallery Images
+                |--------------------------------------------------------------------------
+                */
+
+                foreach (
+                    $galleryUrls
+                    as $index => $galleryUrl
+                ) {
+                    DB::table('property_images')
+                        ->insert([
+                            'property_id' =>
+                                $propertyId,
+
+                            'image_url' =>
+                                $galleryUrl,
+
+                            'is_primary' => 0,
+
+                            'display_order' =>
+                                $index + 1,
+
+                            'created_at' => now(),
+                        ]);
+                }
+
+                /*
+                |--------------------------------------------------------------------------
+                | Amenities
+                |--------------------------------------------------------------------------
+                */
+
+                foreach (
+                    $request->input(
+                        'features',
+                        []
+                    ) as $featureId
+                ) {
+                    DB::table(
+                        'property_feature_values'
+                    )->insert([
+                        'property_id' =>
+                            $propertyId,
+
+                        'feature_id' =>
+                            (int) $featureId,
+
+                        'feature_value' => '1',
+                    ]);
+                }
+
+                return $propertyId;
+            }
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Success
+        |--------------------------------------------------------------------------
+        */
+
+        return response()->json([
+            'success' => true,
+            'message' =>
+                'Property created successfully',
+            'property_id' =>
+                $propertyId,
+        ], 201);
+
+    } catch (Throwable $e) {
+
+        /*
+        |--------------------------------------------------------------------------
+        | Remove Uploaded Images If Something Failed
+        |--------------------------------------------------------------------------
+        */
+
+        foreach ($uploadedPublicIds as $publicId) {
+            try {
+                $cloudinary
+                    ->uploadApi()
+                    ->destroy(
+                        $publicId,
+                        [
+                            'resource_type' => 'image',
+                        ]
+                    );
+            } catch (Throwable $cleanupException) {
+                Log::warning(
+                    'Property image cleanup failed',
+                    [
+                        'public_id' => $publicId,
+                        'error' =>
+                            $cleanupException
+                                ->getMessage(),
+                    ]
+                );
+            }
+        }
+
+        Log::error(
+            'Property creation failed',
+            [
+                'user_id' => $ownerId,
+                'error' => $e->getMessage(),
+            ]
+        );
+
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' =>
+                'Failed to create property',
+        ], 500);
+    }
+}
     /**
      * Get one property with its related data.
      */
@@ -390,38 +952,40 @@ if ($request->filled('neighborhood_id')) {
                 ->where('p.id', $id)
                 ->whereNull('p.deleted_at')
                 ->select([
-                    'p.id',
-                    'p.owner_id',
-                    'p.agency_id',
-                    'p.type_id',
-                    'pt.name as type_name',
-                    'p.category_id',
-                    'pc.name as category_name',
-                    'p.status_id',
-                    'ps.name as status_name',
-                    'p.is_featured',
-                    'p.title',
-                    'p.slug',
-                    'p.description',
-                    'p.price',
-                    'p.currency',
-                    'p.rent_frequency',
-                    'p.area_sqft',
-                    'p.bedrooms',
-                    'p.bathrooms',
-                    'p.floor_number',
-                    'p.total_floors',
-                    'p.year_built',
-                    'p.is_furnished',
-                    'p.availability_date',
-                    'p.listing_date',
-                    'p.created_at',
-                    'p.updated_at',
-                    'u.first_name as owner_first_name',
-                    'u.last_name as owner_last_name',
-                    'u.email as owner_email',
-                    'u.phone as owner_phone',
-                    'a.name as agency_name',
+                   'p.id',
+'p.owner_id',
+'p.agency_id',
+'p.type_id',
+'pt.name as type_name',
+'p.category_id',
+'pc.name as category_name',
+'p.status_id',
+'ps.name as status_name',
+'p.property_condition',
+'p.is_featured',
+'p.title',
+'p.slug',
+'p.description',
+'p.virtual_tour_url',
+'p.price',
+'p.currency',
+'p.rent_frequency',
+'p.area_sqft',
+'p.bedrooms',
+'p.bathrooms',
+'p.floor_number',
+'p.total_floors',
+'p.year_built',
+'p.is_furnished',
+'p.availability_date',
+'p.listing_date',
+'p.created_at',
+'p.updated_at',
+'u.first_name as owner_first_name',
+'u.last_name as owner_last_name',
+'u.email as owner_email',
+'u.phone as owner_phone',
+'a.name as agency_name',
                 ])
                 ->first();
 
