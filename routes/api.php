@@ -1,12 +1,16 @@
 <?php
 
+use App\Http\Controllers\Api\MapController;
+use App\Http\Controllers\Api\AIContextualSearchController;
 use App\Http\Controllers\Api\ChangePasswordController;
 use App\Http\Controllers\Api\CompleteProfileController;
 use App\Http\Controllers\Api\ForgotPasswordController;
 use App\Http\Controllers\Api\GoogleAuthController;
+use App\Http\Controllers\Api\HomeController;
 use App\Http\Controllers\Api\LoginController;
 use App\Http\Controllers\Api\LogoutController;
 use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\PropertyController;
 use App\Http\Controllers\Api\RefreshTokenController;
 use App\Http\Controllers\Api\RegisterController;
 use App\Http\Controllers\Api\RememberMeController;
@@ -17,11 +21,7 @@ use App\Http\Controllers\Api\TwoFactorController;
 use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\PropertyController;
 
-
-//home
-use App\Http\Controllers\Api\HomeController;
 
 /*
 |--------------------------------------------------------------------------
@@ -41,14 +41,11 @@ Route::post(
     'vibe.rate:auth.login,5,15'
 );
 
+
 /*
 |--------------------------------------------------------------------------
 | Google Authentication
 |--------------------------------------------------------------------------
-|
-| Public route:
-| The user does NOT need a Laravel JWT before signing in with Google.
-|
 */
 
 Route::post(
@@ -80,34 +77,22 @@ Route::post(
 |--------------------------------------------------------------------------
 */
 
-/*
-| Original route
-*/
 Route::match(
     ['get', 'post'],
     '/verify-email',
     VerifyEmailController::class
 );
 
-/*
-| Route used by frontend
-*/
 Route::post(
     '/verify-otp',
     VerifyEmailController::class
 );
 
-/*
-| Original route
-*/
 Route::post(
     '/resend-verification',
     ResendVerificationController::class
 );
 
-/*
-| Route used by frontend
-*/
 Route::post(
     '/resend-otp',
     ResendVerificationController::class
@@ -138,11 +123,65 @@ Route::post(
 
 /*
 |--------------------------------------------------------------------------
+| Properties
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/properties',
+    [PropertyController::class, 'index']
+);
+
+Route::get(
+    '/properties/{id}',
+    [PropertyController::class, 'show']
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| Map
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/map',
+    [MapController::class, 'index']
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| Home
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/home',
+    [HomeController::class, 'index']
+);
+
+
+/*
+|--------------------------------------------------------------------------
+| AI Contextual Search
+|--------------------------------------------------------------------------
+*/
+
+Route::post(
+    '/ai/contextual-search',
+    [AIContextualSearchController::class, 'search']
+);
+
+
+/*
+|--------------------------------------------------------------------------
 | Protected Routes
 |--------------------------------------------------------------------------
 */
 
 Route::middleware('jwt')->group(function () {
+    Route::post('/properties', [PropertyController::class, 'store']);
 
     /*
     |--------------------------------------------------------------------------
@@ -159,6 +198,15 @@ Route::middleware('jwt')->group(function () {
         ['put', 'patch'],
         '/profile',
         [ProfileController::class, 'update']
+    );
+
+    /*
+    | Upload / Change Profile Photo
+    */
+
+    Route::post(
+        '/profile/avatar',
+        [ProfileController::class, 'updateAvatar']
     );
 
     Route::match(
@@ -216,30 +264,8 @@ Route::middleware('jwt')->group(function () {
     Route::delete(
         '/two-factor',
         [TwoFactorController::class, 'destroy']
+   
+   
     );
-
-
-    
-});
-
-Route::get('/home', function () {
-    return response()->json([
-        'success' => true,
-        'message' => 'Home API works'
-    ]);
-});
-
-/*Home*/
-    Route::get('/home', [HomeController::class, 'index']);
-
-
-    /*Profile Edit*/
-    Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/profile', [ProfileController::class, 'show']);
-    Route::put('/profile', [ProfileController::class, 'update']);
-
-     Route::post('/properties', [
-        PropertyController::class,
-        'store'
-    ]);
-});
+}
+);
