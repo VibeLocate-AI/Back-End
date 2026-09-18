@@ -911,211 +911,232 @@ public function store(Request $request): JsonResponse
         ], 500);
     }
 }
-    /**
-     * Get one property with its related data.
-     */
-    public function show(int $id): JsonResponse
-    {
-        try {
+  /**
+ * Get one property with its related data.
+ */
+public function show(int $id): JsonResponse
+{
+    try {
 
-            $property = DB::table('properties as p')
-                ->leftJoin(
-                    'property_types as pt',
-                    'pt.id',
-                    '=',
-                    'p.type_id'
-                )
-                ->leftJoin(
-                    'property_categories as pc',
-                    'pc.id',
-                    '=',
-                    'p.category_id'
-                )
-                ->leftJoin(
-                    'property_status as ps',
-                    'ps.id',
-                    '=',
-                    'p.status_id'
-                )
-                ->leftJoin(
-                    'users as u',
-                    'u.id',
-                    '=',
-                    'p.owner_id'
-                )
-                ->leftJoin(
-                    'agencies as a',
-                    'a.id',
-                    '=',
-                    'p.agency_id'
-                )
-                ->where('p.id', $id)
-                ->whereNull('p.deleted_at')
-                ->select([
-                   'p.id',
-'p.owner_id',
-'p.agency_id',
-'p.type_id',
-'pt.name as type_name',
-'p.category_id',
-'pc.name as category_name',
-'p.status_id',
-'ps.name as status_name',
-'p.property_condition',
-'p.is_featured',
-'p.title',
-'p.slug',
-'p.description',
-'p.virtual_tour_url',
-'p.price',
-'p.currency',
-'p.rent_frequency',
-'p.area_sqft',
-'p.bedrooms',
-'p.bathrooms',
-'p.floor_number',
-'p.total_floors',
-'p.year_built',
-'p.is_furnished',
-'p.availability_date',
-'p.listing_date',
-'p.created_at',
-'p.updated_at',
-'u.first_name as owner_first_name',
-'u.last_name as owner_last_name',
-'u.email as owner_email',
-'u.phone as owner_phone',
-'a.name as agency_name',
-                ])
-                ->first();
-
-            if (!$property) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Property not found',
-                ], 404);
-            }
-
-            $property->images = DB::table(
-                'property_images'
+        $property = DB::table('properties as p')
+            ->leftJoin(
+                'property_types as pt',
+                'pt.id',
+                '=',
+                'p.type_id'
             )
-                ->where('property_id', $property->id)
-                ->select([
-                    'id',
-                    'image_url',
-                    'is_primary',
-                    'display_order',
-                ])
-                ->orderBy('display_order')
-                ->get();
-
-            $property->location = DB::table(
-                'property_locations as pl'
+            ->leftJoin(
+                'property_categories as pc',
+                'pc.id',
+                '=',
+                'p.category_id'
             )
-                ->leftJoin(
-                    'neighborhoods as n',
-                    'n.id',
-                    '=',
-                    'pl.neighborhood_id'
-                )
-                ->where('pl.property_id', $property->id)
-                ->select([
-                    'pl.id',
-                    'pl.address_line_1',
-                    'pl.address_line_2',
-                    'pl.building_name',
-                    'pl.latitude',
-                    'pl.longitude',
-                    'pl.neighborhood_id',
-                    'n.name as neighborhood_name',
-                    'pl.street_id',
-                ])
-                ->first();
-
-            $property->features = DB::table(
-                'property_feature_values as pfv'
+            ->leftJoin(
+                'property_status as ps',
+                'ps.id',
+                '=',
+                'p.status_id'
             )
-                ->join(
-                    'property_features as pf',
-                    'pf.id',
-                    '=',
-                    'pfv.feature_id'
-                )
-                ->where(
-                    'pfv.property_id',
-                    $property->id
-                )
-                ->select([
-                    'pf.id',
-                    'pf.name',
-                    'pf.category',
-                    'pfv.feature_value',
-                ])
-                ->orderBy('pf.id')
-                ->get();
+            ->leftJoin(
+                'users as u',
+                'u.id',
+                '=',
+                'p.owner_id'
+            )
+            ->leftJoin(
+                'agencies as a',
+                'a.id',
+                '=',
+                'p.agency_id'
+            )
+            ->where('p.id', $id)
+            ->whereNull('p.deleted_at')
+            ->select([
+                'p.id',
+                'p.owner_id',
+                'p.agency_id',
+                'p.type_id',
+                'pt.name as type_name',
+                'p.category_id',
+                'pc.name as category_name',
+                'p.status_id',
+                'ps.name as status_name',
+                'p.property_condition',
+                'p.is_featured',
+                'p.title',
+                'p.slug',
+                'p.description',
+                'p.virtual_tour_url',
+                'p.price',
+                'p.currency',
+                'p.rent_frequency',
+                'p.area_sqft',
+                'p.bedrooms',
+                'p.bathrooms',
+                'p.floor_number',
+                'p.total_floors',
+                'p.year_built',
+                'p.is_furnished',
+                'p.availability_date',
+                'p.listing_date',
+                'p.created_at',
+                'p.updated_at',
+                'u.first_name as owner_first_name',
+                'u.last_name as owner_last_name',
+                'u.email as owner_email',
+                'u.phone as owner_phone',
+                'a.name as agency_name',
+            ])
+            ->first();
 
-            $property->owner = $property->owner_id
-                ? [
-                    'id' => $property->owner_id,
-                    'first_name' => $property->owner_first_name,
-                    'last_name' => $property->owner_last_name,
-                    'email' => $property->owner_email,
-                    'phone' => $property->owner_phone,
-                ]
-                : null;
-
-            $property->agency = $property->agency_id
-                ? [
-                    'id' => $property->agency_id,
-                    'name' => $property->agency_name,
-                ]
-                : null;
-
-            unset(
-                $property->owner_first_name,
-                $property->owner_last_name,
-                $property->owner_email,
-                $property->owner_phone,
-                $property->agency_name
-            );
-
-            $property->reviews = DB::table('reviews as r')
-                ->join('users as ru', 'ru.id', '=', 'r.user_id')
-                ->where('r.property_id', $property->id)
-                ->where('r.status', 'published')
-                ->whereNull('r.deleted_at')
-                ->select([
-                    'r.id',
-                    'r.rating',
-                    'r.comment',
-                    'r.created_at',
-                    'ru.id as user_id',
-                    'ru.first_name',
-                    'ru.last_name',
-                ])
-                ->orderByDesc('r.created_at')
-                ->get();
-
-            $property->reviews_summary = [
-                'average_rating' => $property->reviews->isNotEmpty()
-                    ? round((float) $property->reviews->avg('rating'), 1)
-                    : null,
-                'total_reviews' => $property->reviews->count(),
-            ];
-
-            return response()->json([
-                'success' => true,
-                'data' => $property,
-            ]);
-
-        } catch (Throwable $e) {
-
-            report($e);
-
+        if (!$property) {
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to load property',
-            ], 500);
+                'message' => 'Property not found',
+            ], 404);
         }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Images
+        |--------------------------------------------------------------------------
+        */
+
+        $property->images = DB::table('property_images')
+            ->where('property_id', $property->id)
+            ->select([
+                'id',
+                'image_url',
+                'is_primary',
+                'display_order',
+            ])
+            ->orderBy('display_order')
+            ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Location
+        |--------------------------------------------------------------------------
+        */
+
+        $property->location = DB::table('property_locations as pl')
+            ->leftJoin(
+                'neighborhoods as n',
+                'n.id',
+                '=',
+                'pl.neighborhood_id'
+            )
+            ->where('pl.property_id', $property->id)
+            ->select([
+                'pl.id',
+                'pl.address_line_1',
+                'pl.address_line_2',
+                'pl.building_name',
+                'pl.latitude',
+                'pl.longitude',
+                'pl.neighborhood_id',
+                'n.name as neighborhood_name',
+                'pl.street_id',
+            ])
+            ->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Features
+        |--------------------------------------------------------------------------
+        */
+
+        $property->features = DB::table(
+            'property_feature_values as pfv'
+        )
+            ->join(
+                'property_features as pf',
+                'pf.id',
+                '=',
+                'pfv.feature_id'
+            )
+            ->where(
+                'pfv.property_id',
+                $property->id
+            )
+            ->select([
+                'pf.id',
+                'pf.name',
+                'pf.category',
+                'pfv.feature_value',
+            ])
+            ->orderBy('pf.id')
+            ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Owner
+        |--------------------------------------------------------------------------
+        */
+
+        $property->owner = $property->owner_id
+            ? [
+                'id' => $property->owner_id,
+                'first_name' => $property->owner_first_name,
+                'last_name' => $property->owner_last_name,
+                'email' => $property->owner_email,
+                'phone' => $property->owner_phone,
+            ]
+            : null;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Agency
+        |--------------------------------------------------------------------------
+        */
+
+        $property->agency = $property->agency_id
+            ? [
+                'id' => $property->agency_id,
+                'name' => $property->agency_name,
+            ]
+            : null;
+
+        unset(
+            $property->owner_first_name,
+            $property->owner_last_name,
+            $property->owner_email,
+            $property->owner_phone,
+            $property->agency_name
+        );
+
+        /*
+        |--------------------------------------------------------------------------
+        | Reviews
+        |--------------------------------------------------------------------------
+        | Reviews table is not currently available.
+        */
+
+        $property->reviews = [];
+
+        $property->reviews_summary = [
+            'average_rating' => null,
+            'total_reviews' => 0,
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => $property,
+        ]);
+
+    } catch (Throwable $e) {
+
+        Log::error('Failed to load property', [
+            'property_id' => $id,
+            'error' => $e->getMessage(),
+        ]);
+
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed to load property',
+        ], 500);
     }
+}
 }
