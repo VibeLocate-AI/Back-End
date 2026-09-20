@@ -83,6 +83,7 @@ class PropertyController extends Controller
     'p.category_id',
     'p.status_id',
     'p.property_condition',
+    'p.action_type',
     'p.is_featured',
     'p.title',
     'p.slug',
@@ -243,6 +244,7 @@ if ($request->filled('neighborhood_id')) {
             $images = collect();
             $locations = collect();
             $features = collect();
+            $reviews = collect();
 
             if (!empty($propertyIds)) {
 
@@ -298,12 +300,25 @@ if ($request->filled('neighborhood_id')) {
                     ->orderBy('pf.id')
                     ->get()
                     ->groupBy('property_id');
-            }
+
+
+                $reviews = DB::table('reviews')
+                    ->whereIn('property_id', $propertyIds)
+                    ->select([
+                        'property_id',
+                        'rating',
+                        'review',
+                        'created_at',
+                    ])
+                    ->orderByDesc('created_at')
+                    ->get()
+                    ->groupBy('property_id');            }
 
             $data = $items->map(function ($property) use (
                 $images,
                 $locations,
-                $features
+                $features,
+                $reviews
             ) {
                 $propertyId = $property->id;
 
@@ -317,6 +332,21 @@ if ($request->filled('neighborhood_id')) {
                 $property->features = $features
                     ->get($propertyId, collect())
                     ->values();
+
+                $propertyReviews = $reviews
+                    ->get($propertyId, collect());
+
+                $property->rating = $propertyReviews->isNotEmpty()
+                    ? round((float) $propertyReviews->avg('rating'), 1)
+                    : 0.0;
+
+                $property->reviews = $propertyReviews
+                    ->pluck('review')
+                    ->filter(function ($review) {
+                        return $review !== null && trim($review) !== '';
+                    })
+                    ->values()
+                    ->all();
 
                 if (isset($property->distance_km)) {
                     $property->distance_km = round(
@@ -371,6 +401,8 @@ public function store(Request $request): JsonResponse
         'type_id' => 'required|integer|exists:property_types,id',
 
         'listing_type' => 'required|in:sale,rent',
+        'action_type' => 'nullable|in:buy,rent,booking',
+
         'price' => 'required|numeric|min:0',
         'rent_frequency' => 'nullable|in:monthly,yearly',
 
@@ -623,7 +655,14 @@ public function store(Request $request): JsonResponse
                             $request->input(
                                 'property_condition'
                             ),
-
+'action_type' =>
+    $request->filled('action_type')
+        ? $request->input('action_type')
+        : (
+            $request->input('listing_type') === 'sale'
+                ? 'buy'
+                : 'rent'
+        ),
                         'is_featured' => 0,
 
                         'title' =>
@@ -914,10 +953,16 @@ public function store(Request $request): JsonResponse
   /**
  * Get one property with its related data.
  */
-public function show(int $id): JsonResponse
-{
+public function show(Request $request, int $id): JsonResponse{
     try {
+$user = $request->attributes->get('auth_user');
 
+if (!$user || empty($user['id'])) {
+    return response()->json([
+        'success' => false,
+        'message' => 'Unauthenticated',
+    ], 401);
+}
         $property = DB::table('properties as p')
             ->leftJoin(
                 'property_types as pt',
@@ -962,6 +1007,7 @@ public function show(int $id): JsonResponse
                 'p.status_id',
                 'ps.name as status_name',
                 'p.property_condition',
+                'p.action_type',
                 'p.is_featured',
                 'p.title',
                 'p.slug',
@@ -1104,20 +1150,62 @@ public function show(int $id): JsonResponse
             $property->owner_phone,
             $property->agency_name
         );
+        /*
+|--------------------------------------------------------------------------
+| Favorite Status
+|--------------------------------------------------------------------------
+*/
 
+$property->is_favorite = DB::table('favorites')
+    ->where('user_id', (int) $user['id'])
+    ->where('property_id', $id)
+    ->exists();
+/*
+|--------------------------------------------------------------------------
+| Primary Action
+|--------------------------------------------------------------------------
+*/
+
+$property->primary_action = match ($property->action_type) {
+    'buy' => [
+        'type' => 'buy',
+        'label' => 'Buy Now',
+    ],
+
+    'rent' => [
+        'type' => 'rent',
+        'label' => 'Rent Now',
+    ],
+
+    'booking' => [
+        'type' => 'booking',
+        'label' => 'Book Now',
+    ],
+
+    default => null,
+};
         /*
         |--------------------------------------------------------------------------
-        | Reviews
+        | Rating & Reviews
         |--------------------------------------------------------------------------
-        | Reviews table is not currently available.
         */
 
-        $property->reviews = [];
+        $reviews = DB::table('reviews')
+            ->where('property_id', $id)
+            ->orderByDesc('created_at')
+            ->get();
 
-        $property->reviews_summary = [
-            'average_rating' => null,
-            'total_reviews' => 0,
-        ];
+        $property->rating = $reviews->isNotEmpty()
+            ? round((float) $reviews->avg('rating'), 1)
+            : 0.0;
+
+        $property->reviews = $reviews
+            ->pluck('review')
+            ->filter(function ($review) {
+                return $review !== null && trim($review) !== '';
+            })
+            ->values()
+            ->all();
 
         return response()->json([
             'success' => true,

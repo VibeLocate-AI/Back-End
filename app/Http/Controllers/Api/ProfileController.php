@@ -297,6 +297,96 @@ class ProfileController extends Controller
 
     /*
     |--------------------------------------------------------------------------
+    | Update User Location
+    |--------------------------------------------------------------------------
+    */
+
+    public function updateLocation(Request $request)
+    {
+        $user = $request->attributes->get('auth_user');
+
+        if (!$user || empty($user['id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated'
+            ], 401);
+        }
+
+        $validator = validator($request->all(), [
+            'latitude' => [
+                'required',
+                'numeric',
+                'between:-90,90',
+            ],
+            'longitude' => [
+                'required',
+                'numeric',
+                'between:-180,180',
+            ],
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid location data',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $latitude = (float) $request->input('latitude');
+            $longitude = (float) $request->input('longitude');
+
+            $profileExists = DB::table('user_profiles')
+                ->where('user_id', $user['id'])
+                ->exists();
+
+            if ($profileExists) {
+                DB::table('user_profiles')
+                    ->where('user_id', $user['id'])
+                    ->update([
+                        'latitude' => $latitude,
+                        'longitude' => $longitude,
+                        'updated_at' => now(),
+                    ]);
+            } else {
+                DB::table('user_profiles')->insert([
+                    'user_id' => $user['id'],
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                    'preferred_language' => 'en',
+                    'currency' => 'AED',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Location updated successfully',
+                'location' => [
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                ]
+            ]);
+
+        } catch (Throwable $e) {
+            Log::error('Failed to update user location', [
+                'user_id' => $user['id'],
+                'error' => $e->getMessage(),
+            ]);
+
+            report($e);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update location'
+            ], 500);
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
     | Upload Profile Avatar
     |--------------------------------------------------------------------------
     */
@@ -447,10 +537,15 @@ class ProfileController extends Controller
                 'u.status',
                 'u.email_verified_at',
                 'u.created_at',
+
                 'up.avatar_url',
                 'up.bio',
                 'up.city',
                 'up.country',
+
+                'up.latitude',
+                'up.longitude',
+
                 'up.preferred_language',
                 'up.currency',
                 'up.nationality',

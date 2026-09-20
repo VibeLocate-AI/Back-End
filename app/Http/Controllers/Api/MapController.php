@@ -4,16 +4,39 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class MapController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
         try {
 
-            $properties = DB::table('properties as p')
+            $validated = $request->validate([
+                'latitude' => [
+                    'nullable',
+                    'numeric',
+                    'between:-90,90',
+                    'required_with:longitude',
+                ],
+                'longitude' => [
+                    'nullable',
+                    'numeric',
+                    'between:-180,180',
+                    'required_with:latitude',
+                ],
+            ]);
+
+            $userLatitude = $validated['latitude'] ?? null;
+            $userLongitude = $validated['longitude'] ?? null;
+
+            $hasUserLocation =
+                $userLatitude !== null &&
+                $userLongitude !== null;
+
+            $query = DB::table('properties as p')
                 ->join(
                     'property_locations as pl',
                     'pl.property_id',
@@ -32,6 +55,12 @@ class MapController extends Controller
                     '=',
                     'p.type_id'
                 )
+                ->leftJoin(
+                    'property_categories as pc',
+                    'pc.id',
+                    '=',
+                    'p.category_id'
+                )
                 ->whereNull('p.deleted_at')
                 ->whereNotNull('pl.latitude')
                 ->whereNotNull('pl.longitude')
@@ -41,11 +70,16 @@ class MapController extends Controller
                     'p.slug',
                     'p.price',
                     'p.currency',
+
                     'p.bedrooms',
                     'p.bathrooms',
                     'p.area_sqft',
+
                     'p.type_id',
                     'pt.name as property_type',
+
+                    'p.category_id',
+                    'pc.name as purpose',
 
                     'pl.address_line_1',
                     'pl.latitude',
@@ -53,77 +87,178 @@ class MapController extends Controller
                     'pl.neighborhood_id',
 
                     'n.name as neighborhood',
-                ])
-                ->orderByDesc('p.id')
-                ->get();
+                ]);
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate distance from user's current location
+            |--------------------------------------------------------------------------
+            */
+
+            if ($hasUserLocation) {
+
+                $distanceSql = '
+                    (
+                        6371 * ACOS(
+                            LEAST(
+                                1,
+                                GREATEST(
+                                    -1,
+                                    COS(RADIANS(?))
+                                    * COS(RADIANS(pl.latitude))
+                                    * COS(
+                                        RADIANS(pl.longitude)
+                                        - RADIANS(?)
+                                    )
+                                    + SIN(RADIANS(?))
+                                    * SIN(RADIANS(pl.latitude))
+                                )
+                            )
+                        )
+                    )
+                ';
+
+                $query->selectRaw(
+                    $distanceSql . ' AS distance_km',
+                    [
+                        $userLatitude,
+                        $userLongitude,
+                        $userLatitude,
+                    ]
+                );
+
+                $query->orderBy('distance_km');
+
+            } else {
+
+                $query->orderByDesc('p.id');
+            }
+
+            $properties = $query->get();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Property Images
+            |--------------------------------------------------------------------------
+            */
 
             $propertyIds = $properties
                 ->pluck('id')
                 ->all();
 
-            $images = DB::table('property_images')
-                ->whereIn('property_id', $propertyIds)
-                ->select([
-                    'id',
-                    'property_id',
-                    'image_url',
-                    'is_primary',
-                    'display_order',
-                ])
-                ->orderByDesc('is_primary')
-                ->orderBy('display_order')
-                ->get()
-                ->groupBy('property_id');
+            $images = collect();
 
-            $data = $properties->map(function ($property) use ($images) {
+            if (!empty($propertyIds)) {
 
-                $propertyImages = $images->get(
-                    $property->id,
-                    collect()
-                );
+                $images = DB::table('property_images')
+                    ->whereIn('property_id', $propertyIds)
+                    ->select([
+                        'id',
+                        'property_id',
+                        'image_url',
+                        'is_primary',
+                        'display_order',
+                    ])
+                    ->orderByDesc('is_primary')
+                    ->orderBy('display_order')
+                    ->get()
+                    ->groupBy('property_id');
+            }
 
-                $primaryImage = $propertyImages
-                    ->firstWhere('is_primary', 1)
-                    ?? $propertyImages->first();
+            /*
+            |--------------------------------------------------------------------------
+            | Prepare Response
+            |--------------------------------------------------------------------------
+            */
 
-                return [
-                    'id' => $property->id,
+            $data = $properties->map(
+                function ($property) use ($images, $hasUserLocation) {
 
-                    'title' => $property->title,
-                    'slug' => $property->slug,
+                    $propertyImages = $images->get(
+                        $property->id,
+                        collect()
+                    );
 
-                    'price' => $property->price,
-                    'currency' => $property->currency,
+                    $primaryImage =
+                        $propertyImages->firstWhere('is_primary', 1)
+                        ?? $propertyImages->first();
 
-                    'bedrooms' => $property->bedrooms,
-                    'bathrooms' => $property->bathrooms,
-                    'area_sqft' => $property->area_sqft,
+                    $item = [
+                        'id' => $property->id,
 
-                    'type_id' => $property->type_id,
-                    'property_type' => $property->property_type,
+                        'title' => $property->title,
+                        'slug' => $property->slug,
 
-                    'latitude' => $property->latitude,
-                    'longitude' => $property->longitude,
+                        'price' => $property->price,
+                        'currency' => $property->currency,
 
-                    'address' => $property->address_line_1,
+                        'category_id' => $property->category_id,
+                        'purpose' => $property->purpose,
 
-                    'neighborhood_id' => $property->neighborhood_id,
-                    'neighborhood' => $property->neighborhood,
+                        'bedrooms' => $property->bedrooms,
+                        'bathrooms' => $property->bathrooms,
+                        'area_sqft' => $property->area_sqft,
 
-                    'primary_image' => $primaryImage
-                        ? [
-                            'id' => $primaryImage->id,
-                            'image_url' => $primaryImage->image_url,
-                        ]
-                        : null,
-                ];
-            });
+                        'type_id' => $property->type_id,
+                        'property_type' => $property->property_type,
 
-            return response()->json([
+                        'latitude' => $property->latitude,
+                        'longitude' => $property->longitude,
+
+                        'address' => $property->address_line_1,
+
+                        'neighborhood_id' =>
+                            $property->neighborhood_id,
+
+                        'neighborhood' =>
+                            $property->neighborhood,
+
+                        'primary_image' => $primaryImage
+                            ? [
+                                'id' => $primaryImage->id,
+                                'image_url' =>
+                                    $primaryImage->image_url,
+                            ]
+                            : null,
+                    ];
+
+                    if ($hasUserLocation) {
+
+                        $item['distance_km'] =
+                            $property->distance_km !== null
+                                ? round(
+                                    (float) $property->distance_km,
+                                    2
+                                )
+                                : null;
+                    }
+
+                    return $item;
+                }
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Response
+            |--------------------------------------------------------------------------
+            */
+
+            $response = [
                 'success' => true,
                 'total' => $data->count(),
-                'data' => $data,
-            ]);
+            ];
+
+            if ($hasUserLocation) {
+
+                $response['user_location'] = [
+                    'latitude' => (float) $userLatitude,
+                    'longitude' => (float) $userLongitude,
+                ];
+            }
+
+            $response['data'] = $data;
+
+            return response()->json($response);
 
         } catch (Throwable $e) {
 

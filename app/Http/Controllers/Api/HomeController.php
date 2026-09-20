@@ -10,482 +10,171 @@ use Throwable;
 
 class HomeController extends Controller
 {
-    public function index(Request $request): JsonResponse
+    public function featuredProperties(Request $request, string $lang): JsonResponse
     {
         try {
+            $lang = $this->language($lang);
 
-            /*
-            |--------------------------------------------------------------------------
-            | User Location
-            |--------------------------------------------------------------------------
-            */
+            $properties = DB::table('properties as p')
+                ->whereNull('p.deleted_at')
+                ->where('p.is_featured', 1)
+                ->select($this->propertyColumns())
+                ->orderByDesc('p.listing_date')
+                ->limit(12)
+                ->get();
 
-           $request->validate([
-    'latitude' => ['nullable', 'numeric', 'between:-90,90'],
-    'longitude' => ['nullable', 'numeric', 'between:-180,180'],
-    'lang' => ['nullable', 'in:en,ar'],
-]);
+            return $this->propertySectionResponse(
+                'featured_properties',
+                $properties,
+                $lang
+            );
+        } catch (Throwable $e) {
+            report($e);
 
-$language = $request->input('lang', 'en');
-
-            $userLatitude = $request->filled('latitude')
-                ? (float) $request->input('latitude')
-                : null;
-
-            $userLongitude = $request->filled('longitude')
-                ? (float) $request->input('longitude')
-                : null;
-
-            $hasUserLocation =
-                $userLatitude !== null
-                && $userLongitude !== null;
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Properties
-            |--------------------------------------------------------------------------
-            */
-$properties = DB::table('properties as p')
-    ->whereNull('p.deleted_at')
-    ->select([
-        'p.id',
-        'p.type_id',
-        'p.category_id',
-        'p.status_id',
-        'p.is_featured',
-        'p.title',
-        'p.slug',
-        'p.description',
-        'p.price',
-        'p.currency',
-        'p.rent_frequency',
-        'p.area_sqft',
-        'p.bedrooms',
-        'p.bathrooms',
-        'p.is_furnished',
-        'p.availability_date',
-        'p.listing_date',
-    ])
-    ->orderBy('p.id')
-    ->get();
-
-$propertyIds = $properties
-    ->pluck('id')
-    ->values()
-    ->all();
-
-$images = collect();
-$locations = collect();
-$features = collect();
-$translations = collect();
-$locationTranslations = collect();
-if (!empty($propertyIds)) {
-
-                /*
-                |--------------------------------------------------------------------------
-                | Images
-                |--------------------------------------------------------------------------
-                */
-
-                $images = DB::table('property_images')
-                    ->whereIn('property_id', $propertyIds)
-                    ->select([
-                        'id',
-                        'property_id',
-                        'image_url',
-                        'is_primary',
-                        'display_order',
-                    ])
-                    ->orderByDesc('is_primary')
-                    ->orderBy('display_order')
-                    ->get()
-                    ->groupBy('property_id');
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | Locations
-                |--------------------------------------------------------------------------
-                */
-
-                $locations = DB::table('property_locations')
-                    ->whereIn('property_id', $propertyIds)
-                    ->select([
-                        'id',
-                        'property_id',
-                        'address_line_1',
-                        'address_line_2',
-                        'building_name',
-                        'latitude',
-                        'longitude',
-                        'neighborhood_id',
-                        'street_id',
-                    ])
-                    ->get()
-                    ->keyBy('property_id');
-/*
-|--------------------------------------------------------------------------
-| Arabic Translations
-|--------------------------------------------------------------------------
-*/
-if ($language === 'ar') {
-
-    // Property title + description translations
-    $translations = DB::table('property_translations')
-        ->whereIn('property_id', $propertyIds)
-        ->where('language_code', 'ar')
-        ->select([
-            'property_id',
-            'title',
-            'description',
-        ])
-        ->get()
-        ->keyBy('property_id');
-
-
-    // Property location translations
-    $locationIds = $locations
-        ->pluck('id')
-        ->filter()
-        ->values()
-        ->all();
-
-    if (!empty($locationIds)) {
-
-        $locationTranslations = DB::table(
-            'property_location_translations'
-        )
-            ->whereIn(
-                'property_location_id',
-                $locationIds
-            )
-            ->where(
-                'language_code',
-                'ar'
-            )
-            ->select([
-                'property_location_id',
-                'address_line_1',
-                'address_line_2',
-                'building_name',
-            ])
-            ->get()
-            ->keyBy('property_location_id');
-    }
-}
-
-                /*
-                |--------------------------------------------------------------------------
-                | Features
-                |--------------------------------------------------------------------------
-                */
-
-                $features = DB::table(
-                    'property_feature_values as pfv'
-                )
-                    ->join(
-                        'property_features as pf',
-                        'pf.id',
-                        '=',
-                        'pfv.feature_id'
-                    )
-                    ->whereIn(
-                        'pfv.property_id',
-                        $propertyIds
-                    )
-                    ->select([
-                        'pfv.property_id',
-                        'pf.id',
-                        'pf.name',
-                        'pf.category',
-                        'pfv.feature_value',
-                    ])
-                    ->orderBy('pf.id')
-                    ->get()
-                    ->groupBy('property_id');
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Prepare Home Properties
-            |--------------------------------------------------------------------------
-            */
-
-           $homeProperties = $properties->map(
-    function ($property) use (
-        $images,
-        $locations,
-        $features,
-        $translations,
-        $locationTranslations,
-        $language
-    ) {
-
-        $propertyId = $property->id;
-
-        if ($language === 'ar') {
-            $translation = $translations->get($propertyId);
-
-            if ($translation) {
-                $property->title = $translation->title;
-                $property->description = $translation->description;
-            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load featured properties',
+            ], 500);
         }
+    }
 
-                    $propertyImages = $images
-                        ->get(
-                            $propertyId,
-                            collect()
-                        )
-                        ->values();
+    public function recommendedProperties(Request $request, string $lang): JsonResponse
+    {
+        try {
+            $lang = $this->language($lang);
 
-                    $property->primary_image =
-                        $propertyImages->firstWhere(
-                            'is_primary',
-                            1
-                        )
-                        ?? $propertyImages->first();
+            $properties = DB::table('properties as p')
+                ->whereNull('p.deleted_at')
+                ->where('p.is_featured', 0)
+                ->select($this->propertyColumns())
+                ->orderByDesc('p.listing_date')
+                ->limit(12)
+                ->get();
 
-                    $property->images =
-                        $propertyImages;
+            return $this->propertySectionResponse(
+                'recommended_properties',
+                $properties,
+                $lang
+            );
+        } catch (Throwable $e) {
+            report($e);
 
-                    $property->location =
-                        $locations->get(
-                            $propertyId
-                        );
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load recommended properties',
+            ], 500);
+        }
+    }
 
-                    if ($language === 'ar' && $property->location) {
-                        $locationTranslation = $locationTranslations
-                            ->get($property->location->id);
+    public function popularAreas(Request $request, string $lang): JsonResponse
+    {
+        try {
+            $lang = $this->language($lang);
 
-                        if ($locationTranslation) {
-                            $property->location->address_line_1 = $locationTranslation->address_line_1;
-                            $property->location->address_line_2 = $locationTranslation->address_line_2;
-                            $property->location->building_name = $locationTranslation->building_name;
+            $areas = DB::table('neighborhoods as n')
+                ->join(
+                    'property_locations as pl',
+                    'pl.neighborhood_id',
+                    '=',
+                    'n.id'
+                )
+                ->join(
+                    'properties as p',
+                    'p.id',
+                    '=',
+                    'pl.property_id'
+                )
+                ->whereNull('p.deleted_at')
+                ->select([
+                    'n.id',
+                    'n.name',
+                    DB::raw('COUNT(DISTINCT p.id) as properties_count'),
+                ])
+                ->groupBy('n.id', 'n.name')
+                ->orderByDesc('properties_count')
+                ->limit(4)
+                ->get();
+
+            $areaIds = $areas->pluck('id')->all();
+            $images = collect();
+            $translations = collect();
+
+            if (!empty($areaIds)) {
+                $images = DB::table('property_locations as pl')
+                    ->join('properties as p', 'p.id', '=', 'pl.property_id')
+                    ->join('property_images as pi', 'pi.property_id', '=', 'p.id')
+                    ->whereIn('pl.neighborhood_id', $areaIds)
+                    ->whereNull('p.deleted_at')
+                    ->where('pi.is_primary', 1)
+                    ->select([
+                        'pl.neighborhood_id',
+                        'p.id as property_id',
+                        'pi.image_url',
+                    ])
+                    ->orderBy('p.id')
+                    ->get()
+                    ->groupBy('neighborhood_id');
+
+                if ($lang === 'ar') {
+                    $translations = DB::table('neighborhood_translations')
+                        ->whereIn('neighborhood_id', $areaIds)
+                        ->where('language_code', 'ar')
+                        ->select(['neighborhood_id', 'name'])
+                        ->get()
+                        ->keyBy('neighborhood_id');
+                }
+            }
+
+            $areas = $areas->map(
+                function ($area) use ($images, $translations, $lang) {
+                    if ($lang === 'ar') {
+                        $translation = $translations->get($area->id);
+
+                        if ($translation) {
+                            $area->name = $translation->name;
                         }
                     }
 
-                    $property->features =
-                        $features
-                            ->get(
-                                $propertyId,
-                                collect()
-                            )
-                            ->values();
+                    $image = $images
+                        ->get($area->id, collect())
+                        ->first();
 
-                    return $property;
+                    $area->image_url = $image?->image_url;
+
+                    return $area;
                 }
-            );
+            )->values();
 
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'language' => $lang,
+                    'popular_areas' => $areas,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            report($e);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Featured Properties
-            |--------------------------------------------------------------------------
-            */
-
-            $featuredProperties = $homeProperties
-                ->filter(function ($property) {
-                    return (int) $property->is_featured === 1;
-                })
-                ->values();
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Nearby & Recommended
-            |--------------------------------------------------------------------------
-            */
-
-            if ($hasUserLocation) {
-
-                $recommendedProperties = $homeProperties
-                    ->filter(function ($property) {
-                        return
-                            (int) $property->is_featured === 0
-                            && $property->location !== null
-                            && $property->location->latitude !== null
-                            && $property->location->longitude !== null;
-                    })
-                    ->map(function ($property) use (
-                        $userLatitude,
-                        $userLongitude
-                    ) {
-
-                        $propertyLatitude =
-                            (float) $property->location->latitude;
-
-                        $propertyLongitude =
-                            (float) $property->location->longitude;
-
-                        $property->distance_km =
-                            $this->calculateDistance(
-                                $userLatitude,
-                                $userLongitude,
-                                $propertyLatitude,
-                                $propertyLongitude
-                            );
-
-                        return $property;
-                    })
-                    ->sortBy('distance_km')
-                    ->take(12)
-                    ->values();
-
-                $recommendationMode = 'nearby';
-
-            } else {
-
-                $recommendedProperties = $homeProperties
-                    ->filter(function ($property) {
-                        return (int) $property->is_featured === 0;
-                    })
-                    ->sortByDesc(function ($property) {
-                        return $property->listing_date;
-                    })
-                    ->take(12)
-                    ->values();
-
-                $recommendationMode = 'recommended';
-            }
-
-
-           /*
-|--------------------------------------------------------------------------
-| Popular Areas
-|--------------------------------------------------------------------------
-*/
-
-$popularAreas = DB::table('neighborhoods as n')
-    ->join(
-        'property_locations as pl',
-        'pl.neighborhood_id',
-        '=',
-        'n.id'
-    )
-    ->join(
-        'properties as p',
-        'p.id',
-        '=',
-        'pl.property_id'
-    )
-    ->whereNull('p.deleted_at')
-    ->select([
-        'n.id',
-        'n.name',
-        DB::raw(
-            'COUNT(DISTINCT p.id) as properties_count'
-        ),
-    ])
-    ->groupBy(
-        'n.id',
-        'n.name'
-    )
-    ->orderByDesc('properties_count')
-    ->limit(4)
-    ->get();
-
-$popularAreaIds = $popularAreas
-    ->pluck('id')
-    ->values()
-    ->all();
-
-$popularAreaImages = collect();
-
-if (!empty($popularAreaIds)) {
-
-    $popularAreaImages = DB::table('property_locations as pl')
-        ->join(
-            'properties as p',
-            'p.id',
-            '=',
-            'pl.property_id'
-        )
-        ->join(
-            'property_images as pi',
-            'pi.property_id',
-            '=',
-            'p.id'
-        )
-        ->whereIn(
-            'pl.neighborhood_id',
-            $popularAreaIds
-        )
-        ->whereNull('p.deleted_at')
-        ->where('pi.is_primary', 1)
-        ->select([
-            'pl.neighborhood_id',
-            'p.id as property_id',
-            'pi.image_url',
-        ])
-        ->orderBy('p.id')
-        ->get()
-        ->groupBy('neighborhood_id');
-}
-
-$popularAreaTranslations = collect();
-
-if ($language === 'ar' && !empty($popularAreaIds)) {
-    $popularAreaTranslations = DB::table('neighborhood_translations')
-        ->whereIn('neighborhood_id', $popularAreaIds)
-        ->where('language_code', 'ar')
-        ->select(['neighborhood_id', 'name'])
-        ->get()
-        ->keyBy('neighborhood_id');
-}
-
-$popularAreas = $popularAreas
-    ->map(function ($area) use ($popularAreaImages, $popularAreaTranslations, $language) {
-
-        if ($language === 'ar') {
-            $areaTranslation = $popularAreaTranslations->get($area->id);
-
-            if ($areaTranslation) {
-                $area->name = $areaTranslation->name;
-            }
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load popular areas',
+            ], 500);
         }
+    }
 
-        $areaImage = $popularAreaImages
-            ->get(
-                $area->id,
-                collect()
-            )
-            ->first();
+    public function topAgents(Request $request, string $lang): JsonResponse
+    {
+        try {
+            $lang = $this->language($lang);
 
-        $area->image_url =
-            $areaImage?->image_url;
-
-        return $area;
-    });
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Top Real Estate Agent
-            |--------------------------------------------------------------------------
-            */
-
-            $topAgentRaw = DB::table('agency_agents as aa')
-                ->join(
-                    'users as u',
-                    'u.id',
-                    '=',
-                    'aa.user_id'
-                )
-                ->leftJoin(
-                    'user_profiles as up',
-                    'up.user_id',
-                    '=',
-                    'u.id'
-                )
-                ->join(
-                    'agencies as a',
-                    'a.id',
-                    '=',
-                    'aa.agency_id'
-                )
+            $agents = DB::table('agency_agents as aa')
+                ->join('users as u', 'u.id', '=', 'aa.user_id')
+                ->leftJoin('user_profiles as up', 'up.user_id', '=', 'u.id')
+                ->leftJoin('user_translations as ut', function ($join) use ($lang) {
+                    $join->on('ut.user_id', '=', 'u.id')
+                        ->where('ut.language_code', '=', $lang);
+                })
+                ->join('agencies as a', 'a.id', '=', 'aa.agency_id')
                 ->whereNull('u.deleted_at')
                 ->select([
                     'u.id as user_id',
@@ -493,6 +182,8 @@ $popularAreas = $popularAreas
                     'u.last_name',
                     'u.phone',
                     'up.avatar_url',
+                    'ut.first_name as translated_first_name',
+                    'ut.last_name as translated_last_name',
                     'aa.is_manager',
                     'a.id as agency_id',
                     'a.name as agency_name',
@@ -500,256 +191,229 @@ $popularAreas = $popularAreas
                 ])
                 ->orderByDesc('aa.is_manager')
                 ->orderBy('aa.joined_at')
-                ->first();
-
-            $topAgent = null;
-
-            if ($topAgentRaw) {
-
-                $topAgent = [
-                    'user_id' =>
-                        $topAgentRaw->user_id,
-
-                    'name' => trim(
-                        $topAgentRaw->first_name
-                        . ' '
-                        . $topAgentRaw->last_name
-                    ),
-
-                    'phone' =>
-                        $topAgentRaw->phone,
-
-                    'avatar_url' =>
-                        $topAgentRaw->avatar_url,
-
-                    'is_manager' =>
-                        (bool) $topAgentRaw->is_manager,
-
-                    'agency' => [
-                        'id' =>
-                            $topAgentRaw->agency_id,
-
-                        'name' =>
-                            $topAgentRaw->agency_name,
-
-                        'logo_url' =>
-                            $topAgentRaw->agency_logo,
-                    ],
-                ];
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Property Types
-            |--------------------------------------------------------------------------
-            */
-
-            $propertyTypes = DB::table('property_types as pt')
-                ->leftJoin('property_type_translations as ptt', function ($join) use ($language) {
-                    $join->on('ptt.property_type_id', '=', 'pt.id')
-                        ->where('ptt.language_code', '=', $language);
-                })
-                ->select([
-                    'pt.id',
-                    DB::raw("CASE WHEN '{$language}' = 'ar' THEN COALESCE(ptt.name, pt.name) ELSE pt.name END as name"),
-                ])
-                ->orderBy('pt.id')
-                ->get();
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Categories
-            |--------------------------------------------------------------------------
-            */
-
-            $categories = DB::table('property_categories as pc')
-                ->leftJoin('property_category_translations as pct', function ($join) use ($language) {
-                    $join->on('pct.property_category_id', '=', 'pc.id')
-                        ->where('pct.language_code', '=', $language);
-                })
-                ->select([
-                    'pc.id',
-                    DB::raw("CASE WHEN '{$language}' = 'ar' THEN COALESCE(pct.name, pc.name) ELSE pc.name END as name"),
-                ])
-                ->orderBy('pc.id')
-                ->get();
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Testimonials
-            |--------------------------------------------------------------------------
-            */
-
-            $testimonials = DB::table('reviews as r')
-                ->join(
-                    'users as u',
-                    'u.id',
-                    '=',
-                    'r.user_id'
-                )
-                ->where(
-                    'r.status',
-                    'published'
-                )
-                ->whereNull('r.deleted_at')
-                ->whereNull('u.deleted_at')
-                ->select([
-                    'r.id',
-                    'r.property_id',
-                    'r.rating',
-                    'r.comment',
-                    'r.created_at',
-                    'u.id as user_id',
-                    'u.first_name',
-                    'u.last_name',
-                ])
-                ->orderByDesc('r.created_at')
-                ->limit(3)
+                ->limit(10)
                 ->get()
-                ->map(function ($review) {
-
-                    $review->user_name = trim(
-                        $review->first_name
-                        . ' '
-                        . $review->last_name
-                    );
-
-                    unset(
-                        $review->first_name,
-                        $review->last_name
-                    );
-
-                    return $review;
-                });
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Stats
-            |--------------------------------------------------------------------------
-            */
-
-            $totalProperties = DB::table('properties')
-                ->whereNull('deleted_at')
-                ->count();
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Response
-            |--------------------------------------------------------------------------
-            */
+                ->map(function ($agent) {
+                    return [
+                        'user_id' => $agent->user_id,
+                        'name' => trim(
+                            ($agent->translated_first_name ?? $agent->first_name)
+                            . ' '
+                            . ($agent->translated_last_name ?? $agent->last_name)
+                        ),
+                        'phone' => $agent->phone,
+                        'avatar_url' => $agent->avatar_url,
+                        'is_manager' => (bool) $agent->is_manager,
+                        'agency' => [
+                            'id' => $agent->agency_id,
+                            'name' => $agent->agency_name,
+                            'logo_url' => $agent->agency_logo,
+                        ],
+                    ];
+                })
+                ->values();
 
             return response()->json([
                 'success' => true,
-
                 'data' => [
-
-                   'total' =>
-    $homeProperties->count(),
-
-'language' =>
-    $language,
-
-'popular_areas' =>
-    $popularAreas,
-
-                    'featured_properties' =>
-                        $featuredProperties,
-
-                    'recommendation_mode' =>
-                        $recommendationMode,
-
-                    'user_location' =>
-                        $hasUserLocation
-                            ? [
-                                'latitude' =>
-                                    $userLatitude,
-
-                                'longitude' =>
-                                    $userLongitude,
-                            ]
-                            : null,
-
-                    'recommended_properties' =>
-                        $recommendedProperties,
-
-                    'top_agent' =>
-                        $topAgent,
-
-                    'properties' =>
-                        $homeProperties,
-
-                    'property_types' =>
-                        $propertyTypes,
-
-                    'categories' =>
-                        $categories,
-
-                    'testimonials' =>
-                        $testimonials,
-
-                    'stats' => [
-                        'total_properties' =>
-                            $totalProperties,
-                    ],
+                    'language' => $lang,
+                    'top_agents' => $agents,
                 ],
             ]);
-
         } catch (Throwable $e) {
-
             report($e);
 
             return response()->json([
                 'success' => false,
-                'message' =>
-                    'Failed to load home page data',
+                'message' => 'Failed to load top agents',
             ], 500);
         }
     }
 
+    private function language(string $lang): string
+    {
+        abort_unless(in_array($lang, ['en', 'ar'], true), 404);
 
-    /*
-    |--------------------------------------------------------------------------
-    | Calculate Distance - Haversine Formula
-    |--------------------------------------------------------------------------
-    */
+        return $lang;
+    }
 
-    private function calculateDistance(
-        float $latitude1,
-        float $longitude1,
-        float $latitude2,
-        float $longitude2
-    ): float {
+    private function propertyColumns(): array
+    {
+        return [
+            'p.id',
+            'p.type_id',
+            'p.category_id',
+            'p.status_id',
+            'p.is_featured',
+            'p.title',
+            'p.slug',
+            'p.description',
+            'p.price',
+            'p.currency',
+            'p.rent_frequency',
+            'p.area_sqft',
+            'p.bedrooms',
+            'p.bathrooms',
+            'p.is_furnished',
+            'p.availability_date',
+            'p.listing_date',
+        ];
+    }
 
-        $earthRadius = 6371;
+    private function propertySectionResponse(
+        string $key,
+        $properties,
+        string $lang
+    ): JsonResponse {
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'language' => $lang,
+                $key => $this->prepareProperties($properties, $lang),
+            ],
+        ]);
+    }
 
-        $latitudeDifference =
-            deg2rad($latitude2 - $latitude1);
+    private function prepareProperties($properties, string $lang)
+    {
+        $propertyIds = $properties->pluck('id')->values()->all();
 
-        $longitudeDifference =
-            deg2rad($longitude2 - $longitude1);
+        if (empty($propertyIds)) {
+            return $properties->values();
+        }
 
-        $a =
-            sin($latitudeDifference / 2)
-            * sin($latitudeDifference / 2)
-            + cos(deg2rad($latitude1))
-            * cos(deg2rad($latitude2))
-            * sin($longitudeDifference / 2)
-            * sin($longitudeDifference / 2);
+        $images = DB::table('property_images')
+            ->whereIn('property_id', $propertyIds)
+            ->select([
+                'id',
+                'property_id',
+                'image_url',
+                'is_primary',
+                'display_order',
+            ])
+            ->orderByDesc('is_primary')
+            ->orderBy('display_order')
+            ->get()
+            ->groupBy('property_id');
 
-        $c =
-            2 * atan2(
-                sqrt($a),
-                sqrt(1 - $a)
-            );
+        $locations = DB::table('property_locations')
+            ->whereIn('property_id', $propertyIds)
+            ->select([
+                'id',
+                'property_id',
+                'address_line_1',
+                'address_line_2',
+                'building_name',
+                'latitude',
+                'longitude',
+                'neighborhood_id',
+                'street_id',
+            ])
+            ->get()
+            ->keyBy('property_id');
 
-        return round(
-            $earthRadius * $c,
-            2
-        );
+        $features = DB::table('property_feature_values as pfv')
+            ->join('property_features as pf', 'pf.id', '=', 'pfv.feature_id')
+            ->whereIn('pfv.property_id', $propertyIds)
+            ->select([
+                'pfv.property_id',
+                'pf.id',
+                'pf.name',
+                'pf.category',
+                'pfv.feature_value',
+            ])
+            ->orderBy('pf.id')
+            ->get()
+            ->groupBy('property_id');
+
+        $translations = collect();
+        $locationTranslations = collect();
+
+        if ($lang === 'ar') {
+            $translations = DB::table('property_translations')
+                ->whereIn('property_id', $propertyIds)
+                ->where('language_code', 'ar')
+                ->select([
+                    'property_id',
+                    'title',
+                    'description',
+                ])
+                ->get()
+                ->keyBy('property_id');
+
+            $locationIds = $locations
+                ->pluck('id')
+                ->filter()
+                ->values()
+                ->all();
+
+            if (!empty($locationIds)) {
+                $locationTranslations = DB::table(
+                    'property_location_translations'
+                )
+                    ->whereIn('property_location_id', $locationIds)
+                    ->where('language_code', 'ar')
+                    ->select([
+                        'property_location_id',
+                        'address_line_1',
+                        'address_line_2',
+                        'building_name',
+                    ])
+                    ->get()
+                    ->keyBy('property_location_id');
+            }
+        }
+
+        return $properties->map(
+            function ($property) use (
+                $images,
+                $locations,
+                $features,
+                $translations,
+                $locationTranslations,
+                $lang
+            ) {
+                if ($lang === 'ar') {
+                    $translation = $translations->get($property->id);
+
+                    if ($translation) {
+                        $property->title = $translation->title;
+                        $property->description = $translation->description;
+                    }
+                }
+
+                $propertyImages = $images
+                    ->get($property->id, collect())
+                    ->values();
+
+                $property->primary_image =
+                    $propertyImages->firstWhere('is_primary', 1)
+                    ?? $propertyImages->first();
+
+                $property->images = $propertyImages;
+
+                $property->location = $locations->get($property->id);
+
+                if ($lang === 'ar' && $property->location) {
+                    $translation = $locationTranslations
+                        ->get($property->location->id);
+
+                    if ($translation) {
+                        $property->location->address_line_1 =
+                            $translation->address_line_1;
+                        $property->location->address_line_2 =
+                            $translation->address_line_2;
+                        $property->location->building_name =
+                            $translation->building_name;
+                    }
+                }
+
+                $property->features = $features
+                    ->get($property->id, collect())
+                    ->values();
+
+                return $property;
+            }
+        )->values();
     }
 }
