@@ -261,18 +261,30 @@ if ($request->filled('neighborhood_id')) {
                     ->get()
                     ->groupBy('property_id');
 
-                $locations = DB::table('property_locations')
-                    ->whereIn('property_id', $propertyIds)
+                $locations = DB::table('property_locations as pl')
+                    ->leftJoin('neighborhoods as n', 'n.id', '=', 'pl.neighborhood_id')
+                    ->leftJoin('neighborhood_translations as nt_en', function ($join) {
+                        $join->on('nt_en.neighborhood_id', '=', 'pl.neighborhood_id')
+                            ->where('nt_en.language_code', '=', 'en');
+                    })
+                    ->leftJoin('neighborhood_translations as nt_ar', function ($join) {
+                        $join->on('nt_ar.neighborhood_id', '=', 'pl.neighborhood_id')
+                            ->where('nt_ar.language_code', '=', 'ar');
+                    })
+                    ->whereIn('pl.property_id', $propertyIds)
                     ->select([
-                        'id',
-                        'property_id',
-                        'address_line_1',
-                        'address_line_2',
-                        'building_name',
-                        'latitude',
-                        'longitude',
-                        'neighborhood_id',
-                        'street_id',
+                        'pl.id',
+                        'pl.property_id',
+                        'pl.address_line_1',
+                        'pl.address_line_2',
+                        'pl.building_name',
+                        'pl.latitude',
+                        'pl.longitude',
+                        'pl.neighborhood_id',
+                        'n.name as neighborhood_name',
+                        DB::raw('COALESCE(nt_en.name, n.name) as neighborhood_en'),
+                        'nt_ar.name as neighborhood_ar',
+                        'pl.street_id',
                     ])
                     ->get()
                     ->keyBy('property_id');
@@ -1072,6 +1084,14 @@ if (!$user || empty($user['id'])) {
                 '=',
                 'pl.neighborhood_id'
             )
+            ->leftJoin('neighborhood_translations as nt_en', function ($join) {
+                $join->on('nt_en.neighborhood_id', '=', 'pl.neighborhood_id')
+                    ->where('nt_en.language_code', '=', 'en');
+            })
+            ->leftJoin('neighborhood_translations as nt_ar', function ($join) {
+                $join->on('nt_ar.neighborhood_id', '=', 'pl.neighborhood_id')
+                    ->where('nt_ar.language_code', '=', 'ar');
+            })
             ->where('pl.property_id', $property->id)
             ->select([
                 'pl.id',
@@ -1082,6 +1102,8 @@ if (!$user || empty($user['id'])) {
                 'pl.longitude',
                 'pl.neighborhood_id',
                 'n.name as neighborhood_name',
+                DB::raw('COALESCE(nt_en.name, n.name) as neighborhood_en'),
+                'nt_ar.name as neighborhood_ar',
                 'pl.street_id',
             ])
             ->first();
