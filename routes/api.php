@@ -1,4 +1,5 @@
 <?php
+use App\Services\VibeAiService;
 use App\Http\Controllers\Api\FavoriteController;
 use App\Http\Controllers\Api\MapController;
 use App\Http\Controllers\Api\AIContextualSearchController;
@@ -92,26 +93,55 @@ Route::get('/map', [MapController::class, 'index']);
 Route::prefix('home/{lang}')
     ->where(['lang' => 'en|ar'])
     ->group(function () {
+
+        // Featured Properties
         Route::get(
             '/featured-properties',
             [HomeController::class, 'featuredProperties']
         );
 
+        // Featured Property Details
+        Route::get(
+            '/featured-properties/{id}',
+            [HomeController::class, 'featuredPropertyDetails']
+        )->whereNumber('id');
+
+        // Recommended Properties
         Route::get(
             '/recommended-properties',
             [HomeController::class, 'recommendedProperties']
         );
 
+        // Recommended Property Details
+        Route::get(
+            '/recommended-properties/{id}',
+            [HomeController::class, 'recommendedPropertyDetails']
+        )->whereNumber('id');
+
+        // Popular Areas
         Route::get(
             '/popular-areas',
             [HomeController::class, 'popularAreas']
         );
 
+        // Popular Area Details
         Route::get(
-            '/top-agents',
-            [HomeController::class, 'topAgents']
-        );
-    });
+            '/popular-areas/{id}',
+            [HomeController::class, 'popularAreaDetails']
+        )->whereNumber('id');
+
+        // Top Agents
+Route::get(
+    '/top-agents',
+    [HomeController::class, 'topAgents']
+);
+
+// Top Agent Details
+Route::get(
+    '/top-agents/{id}',
+    [HomeController::class, 'topAgentDetails']
+)->whereNumber('id');
+});
 
 /*
 |--------------------------------------------------------------------------
@@ -223,4 +253,22 @@ Route::delete('/favorites/{propertyId}', [FavoriteController::class, 'destroy'])
     Route::get('/two-factor', [TwoFactorController::class, 'show']);
     Route::post('/two-factor', [TwoFactorController::class, 'store']);
     Route::delete('/two-factor', [TwoFactorController::class, 'destroy']);
+    Route::get('/test-ai-connection', function (VibeAiService $aiService) {
+    $result = $aiService->parseSearchQuery(
+        'I want an office under 200000 AED in Dubai Marina',
+        'en'
+    );
+
+    if ($result === null) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed to connect to AI service',
+        ], 503);
+    }
+
+    return response()->json([
+        'success' => true,
+        'ai_response' => $result,
+    ]);
+});
 });

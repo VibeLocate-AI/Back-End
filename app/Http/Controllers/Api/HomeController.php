@@ -229,6 +229,314 @@ class HomeController extends Controller
             ], 500);
         }
     }
+public function featuredPropertyDetails(
+    Request $request,
+    string $lang,
+    int $id
+): JsonResponse {
+    try {
+        $lang = $this->language($lang);
+
+        $property = DB::table('properties as p')
+            ->where('p.id', $id)
+            ->where('p.is_featured', 1)
+            ->whereNull('p.deleted_at')
+            ->select($this->propertyColumns())
+            ->first();
+
+        if (!$property) {
+            return response()->json([
+                'success' => false,
+                'message' => $lang === 'ar'
+                    ? 'العقار المميز غير موجود'
+                    : 'Featured property not found',
+            ], 404);
+        }
+
+        $property = $this->prepareProperties(
+            collect([$property]),
+            $lang
+        )->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'language' => $lang,
+                'featured_property' => $property,
+            ],
+        ]);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => $lang === 'ar'
+                ? 'فشل تحميل تفاصيل العقار المميز'
+                : 'Failed to load featured property details',
+        ], 500);
+    }
+}
+public function recommendedPropertyDetails(
+    Request $request,
+    string $lang,
+    int $id
+): JsonResponse {
+    try {
+        $lang = $this->language($lang);
+
+        $property = DB::table('properties as p')
+            ->where('p.id', $id)
+            ->where('p.is_featured', 0)
+            ->whereNull('p.deleted_at')
+            ->select($this->propertyColumns())
+            ->first();
+
+        if (!$property) {
+            return response()->json([
+                'success' => false,
+                'message' => $lang === 'ar'
+                    ? 'العقار الموصى به غير موجود'
+                    : 'Recommended property not found',
+            ], 404);
+        }
+
+        $property = $this->prepareProperties(
+            collect([$property]),
+            $lang
+        )->first();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'language' => $lang,
+                'recommended_property' => $property,
+            ],
+        ]);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => $lang === 'ar'
+                ? 'فشل تحميل تفاصيل العقار الموصى به'
+                : 'Failed to load recommended property details',
+        ], 500);
+    }
+}
+public function popularAreaDetails(
+    Request $request,
+    string $lang,
+    int $id
+): JsonResponse {
+    try {
+        $lang = $this->language($lang);
+
+        $area = DB::table('neighborhoods as n')
+            ->where('n.id', $id)
+            ->first();
+
+        if (!$area) {
+            return response()->json([
+                'success' => false,
+                'message' => $lang === 'ar'
+                    ? 'المنطقة غير موجودة'
+                    : 'Popular area not found',
+            ], 404);
+        }
+
+        $areaName = $area->name;
+
+        if ($lang === 'ar') {
+            $translation = DB::table('neighborhood_translations')
+                ->where('neighborhood_id', $id)
+                ->where('language_code', 'ar')
+                ->first();
+
+            if ($translation && !empty($translation->name)) {
+                $areaName = $translation->name;
+            }
+        }
+
+        $properties = DB::table('properties as p')
+            ->join(
+                'property_locations as pl',
+                'pl.property_id',
+                '=',
+                'p.id'
+            )
+            ->where('pl.neighborhood_id', $id)
+            ->whereNull('p.deleted_at')
+            ->select($this->propertyColumns())
+            ->orderByDesc('p.listing_date')
+            ->get();
+
+        $properties = $this->prepareProperties(
+            $properties,
+            $lang
+        );
+
+        $primaryImage = DB::table('property_images as pi')
+            ->join(
+                'property_locations as pl',
+                'pl.property_id',
+                '=',
+                'pi.property_id'
+            )
+            ->join(
+                'properties as p',
+                'p.id',
+                '=',
+                'pi.property_id'
+            )
+            ->where('pl.neighborhood_id', $id)
+            ->where('pi.is_primary', 1)
+            ->whereNull('p.deleted_at')
+            ->orderByDesc('p.listing_date')
+            ->value('pi.image_url');
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'language' => $lang,
+                'popular_area' => [
+                    'id' => $id,
+                    'name' => $areaName,
+                    'properties_count' => $properties->count(),
+                    'image_url' => $primaryImage,
+                    'properties' => $properties->values(),
+                ],
+            ],
+        ]);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => $lang === 'ar'
+                ? 'فشل تحميل تفاصيل المنطقة'
+                : 'Failed to load popular area details',
+        ], 500);
+    }
+}
+public function topAgentDetails(
+    Request $request,
+    string $lang,
+    int $id
+): JsonResponse {
+    try {
+        $lang = $this->language($lang);
+
+        $agent = DB::table('agency_agents as aa')
+            ->join('users as u', 'u.id', '=', 'aa.user_id')
+            ->leftJoin('user_profiles as up', 'up.user_id', '=', 'u.id')
+            ->leftJoin('user_translations as ut', function ($join) use ($lang) {
+                $join->on('ut.user_id', '=', 'u.id')
+                    ->where('ut.language_code', '=', $lang);
+            })
+            ->join('agencies as a', 'a.id', '=', 'aa.agency_id')
+            ->where('aa.user_id', $id)
+            ->whereNull('u.deleted_at')
+            ->select([
+                'u.id as user_id',
+
+                DB::raw(
+                    "CONCAT(u.first_name, ' ', u.last_name) as default_name"
+                ),
+
+                DB::raw(
+                    "CONCAT(ut.first_name, ' ', ut.last_name) as translated_name"
+                ),
+
+                'u.phone',
+                'up.avatar_url',
+
+                'aa.is_manager',
+                'aa.joined_at',
+
+                'a.id as agency_id',
+                'a.name as agency_name',
+                'a.slug as agency_slug',
+                'a.license_number',
+                'a.logo_url as agency_logo_url',
+                'a.address as agency_address',
+                'a.phone as agency_phone',
+                'a.email as agency_email',
+                'a.status as agency_status',
+            ])
+            ->first();
+
+        if (!$agent) {
+            return response()->json([
+                'success' => false,
+                'message' => $lang === 'ar'
+                    ? 'الوكيل العقاري غير موجود'
+                    : 'Agent not found',
+            ], 404);
+        }
+
+        $properties = DB::table('properties as p')
+            ->where('p.agency_id', $agent->agency_id)
+            ->whereNull('p.deleted_at')
+            ->select($this->propertyColumns())
+            ->orderByDesc('p.listing_date')
+            ->get();
+
+        $properties = $this->prepareProperties(
+            $properties,
+            $lang
+        );
+
+        $agentName = !empty(trim((string) $agent->translated_name))
+            ? trim($agent->translated_name)
+            : trim($agent->default_name);
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'language' => $lang,
+
+                'agent' => [
+                    'user_id' => $agent->user_id,
+                    'name' => $agentName,
+                    'phone' => $agent->phone,
+                    'avatar_url' => $agent->avatar_url,
+
+                    'is_manager' => (bool) $agent->is_manager,
+                    'joined_at' => $agent->joined_at,
+
+                    'agency' => [
+                        'id' => $agent->agency_id,
+                        'name' => $agent->agency_name,
+                        'slug' => $agent->agency_slug,
+                        'license_number' => $agent->license_number,
+                        'logo_url' => $agent->agency_logo_url,
+                        'address' => $agent->agency_address,
+                        'phone' => $agent->agency_phone,
+                        'email' => $agent->agency_email,
+                        'status' => $agent->agency_status,
+                    ],
+
+                    'properties_count' => $properties->count(),
+
+                    'properties' => $properties->values(),
+                ],
+            ],
+        ]);
+
+    } catch (Throwable $e) {
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => $lang === 'ar'
+                ? 'فشل تحميل تفاصيل الوكيل العقاري'
+                : 'Failed to load agent details',
+        ], 500);
+    }
+}
 
     private function language(string $lang): string
     {
