@@ -1,5 +1,7 @@
 <?php
+
 use App\Services\VibeAiService;
+
 use App\Http\Controllers\Api\FavoriteController;
 use App\Http\Controllers\Api\MapController;
 use App\Http\Controllers\Api\AIContextualSearchController;
@@ -21,8 +23,11 @@ use App\Http\Controllers\Api\SessionsController;
 use App\Http\Controllers\Api\TwoFactorController;
 use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\ReviewController;
+use App\Http\Controllers\Api\NotificationController;
+
+use Illuminate\Support\Facades\Route;
+
 /*
 |--------------------------------------------------------------------------
 | Authentication
@@ -131,17 +136,17 @@ Route::prefix('home/{lang}')
         )->whereNumber('id');
 
         // Top Agents
-Route::get(
-    '/top-agents',
-    [HomeController::class, 'topAgents']
-);
+        Route::get(
+            '/top-agents',
+            [HomeController::class, 'topAgents']
+        );
 
-// Top Agent Details
-Route::get(
-    '/top-agents/{id}',
-    [HomeController::class, 'topAgentDetails']
-)->whereNumber('id');
-});
+        // Top Agent Details
+        Route::get(
+            '/top-agents/{id}',
+            [HomeController::class, 'topAgentDetails']
+        )->whereNumber('id');
+    });
 
 /*
 |--------------------------------------------------------------------------
@@ -153,6 +158,7 @@ Route::post(
     '/ai/contextual-search',
     [AIContextualSearchController::class, 'search']
 );
+
 /*
 |--------------------------------------------------------------------------
 | Protected Routes
@@ -160,21 +166,95 @@ Route::post(
 */
 
 Route::middleware('jwt')->group(function () {
-    Route::post('/properties/{propertyId}/review', [ReviewController::class, 'store']);
-Route::delete('/properties/{propertyId}/review', [ReviewController::class, 'destroy']);
-     Route::get('/properties/{id}', [PropertyController::class, 'show']);
-    Route::post('/properties', [PropertyController::class, 'store']);
-    Route::get('/favorites', [FavoriteController::class, 'index']);
-Route::post('/favorites/{propertyId}', [FavoriteController::class, 'store']);
-Route::delete('/favorites/{propertyId}', [FavoriteController::class, 'destroy']);
 
     /*
     |--------------------------------------------------------------------------
-    | Properties
+    | Property Reviews
     |--------------------------------------------------------------------------
     */
 
-    Route::post('/properties', [PropertyController::class, 'store']);
+    Route::post(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'store']
+    );
+
+    Route::delete(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'destroy']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Property Details / Create
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/properties/{id}',
+        [PropertyController::class, 'show']
+    );
+
+    Route::post(
+        '/properties',
+        [PropertyController::class, 'store']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Favorites
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/favorites',
+        [FavoriteController::class, 'index']
+    );
+
+    Route::post(
+        '/favorites/{propertyId}',
+        [FavoriteController::class, 'store']
+    );
+
+    Route::delete(
+        '/favorites/{propertyId}',
+        [FavoriteController::class, 'destroy']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Notifications
+    |--------------------------------------------------------------------------
+    */
+
+    // Get all notifications
+    Route::get(
+        '/notifications',
+        [NotificationController::class, 'index']
+    );
+
+    // Get unread notifications count
+    Route::get(
+        '/notifications/unread-count',
+        [NotificationController::class, 'unreadCount']
+    );
+
+    // Mark all notifications as read
+    Route::put(
+        '/notifications/read-all',
+        [NotificationController::class, 'markAllAsRead']
+    );
+
+    // Mark one notification as read
+    Route::put(
+        '/notifications/{id}/read',
+        [NotificationController::class, 'markAsRead']
+    )->whereNumber('id');
+
+    // Delete notification
+    Route::delete(
+        '/notifications/{id}',
+        [NotificationController::class, 'destroy']
+    )->whereNumber('id');
 
     /*
     |--------------------------------------------------------------------------
@@ -233,7 +313,10 @@ Route::delete('/favorites/{propertyId}', [FavoriteController::class, 'destroy'])
     |--------------------------------------------------------------------------
     */
 
-    Route::post('/change-password', ChangePasswordController::class);
+    Route::post(
+        '/change-password',
+        ChangePasswordController::class
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -241,8 +324,15 @@ Route::delete('/favorites/{propertyId}', [FavoriteController::class, 'destroy'])
     |--------------------------------------------------------------------------
     */
 
-    Route::get('/sessions', [SessionsController::class, 'index']);
-    Route::delete('/sessions', [SessionsController::class, 'destroy']);
+    Route::get(
+        '/sessions',
+        [SessionsController::class, 'index']
+    );
+
+    Route::delete(
+        '/sessions',
+        [SessionsController::class, 'destroy']
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -250,25 +340,45 @@ Route::delete('/favorites/{propertyId}', [FavoriteController::class, 'destroy'])
     |--------------------------------------------------------------------------
     */
 
-    Route::get('/two-factor', [TwoFactorController::class, 'show']);
-    Route::post('/two-factor', [TwoFactorController::class, 'store']);
-    Route::delete('/two-factor', [TwoFactorController::class, 'destroy']);
-    Route::get('/test-ai-connection', function (VibeAiService $aiService) {
-    $result = $aiService->parseSearchQuery(
-        'I want an office under 200000 AED in Dubai Marina',
-        'en'
+    Route::get(
+        '/two-factor',
+        [TwoFactorController::class, 'show']
     );
 
-    if ($result === null) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Failed to connect to AI service',
-        ], 503);
-    }
+    Route::post(
+        '/two-factor',
+        [TwoFactorController::class, 'store']
+    );
 
-    return response()->json([
-        'success' => true,
-        'ai_response' => $result,
-    ]);
+    Route::delete(
+        '/two-factor',
+        [TwoFactorController::class, 'destroy']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Temporary AI Connection Test
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get('/test-ai-connection', function (VibeAiService $aiService) {
+
+        $result = $aiService->parseSearchQuery(
+            'I want an office under 200000 AED in Dubai Marina',
+            'en'
+        );
+
+        if ($result === null) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to connect to AI service',
+            ], 503);
+        }
+
+        return response()->json([
+            'success' => true,
+            'ai_response' => $result,
+        ]);
+    });
 });
-});
+require __DIR__ . '/admin.php';

@@ -1,7 +1,7 @@
 <?php
 
 namespace App\Http\Controllers\Api;
-
+use App\Services\VibeAiService;
 use App\Http\Controllers\Controller;
 use Cloudinary\Cloudinary;
 use Illuminate\Http\JsonResponse;
@@ -61,7 +61,8 @@ class PropertyController extends Controller
             }
 
             $query = DB::table('properties as p')
-                ->whereNull('p.deleted_at');
+                ->whereNull('p.deleted_at')
+                ->where('p.moderation_status', 'approved');
 
             if ($hasNearbySort) {
                 $query
@@ -82,6 +83,7 @@ class PropertyController extends Controller
     'p.type_id',
     'p.category_id',
     'p.status_id',
+    'p.moderation_status',
     'p.property_condition',
     'p.action_type',
     'p.is_featured',
@@ -663,6 +665,12 @@ public function store(Request $request): JsonResponse
                         'status_id' =>
                             (int) $statusId,
 
+                        // Every newly submitted property must be reviewed by admin.
+                        'moderation_status' => 'pending',
+                        'rejection_reason' => null,
+                        'reviewed_by' => null,
+                        'reviewed_at' => null,
+
                         'property_condition' =>
                             $request->input(
                                 'property_condition'
@@ -909,9 +917,10 @@ public function store(Request $request): JsonResponse
         return response()->json([
             'success' => true,
             'message' =>
-                'Property created successfully',
+                'Property submitted successfully and is pending admin approval',
             'property_id' =>
                 $propertyId,
+            'moderation_status' => 'pending',
         ], 201);
 
     } catch (Throwable $e) {
@@ -1018,6 +1027,10 @@ if (!$user || empty($user['id'])) {
                 'pc.name as category_name',
                 'p.status_id',
                 'ps.name as status_name',
+                'p.moderation_status',
+                'p.rejection_reason',
+                'p.reviewed_by',
+                'p.reviewed_at',
                 'p.property_condition',
                 'p.action_type',
                 'p.is_featured',
@@ -1052,6 +1065,31 @@ if (!$user || empty($user['id'])) {
                 'success' => false,
                 'message' => 'Property not found',
             ], 404);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Moderation Visibility
+        |--------------------------------------------------------------------------
+        */
+
+        if ($property->moderation_status !== 'approved') {
+            $currentUserId = (int) $user['id'];
+
+            $isAdmin = DB::table('roles as r')
+                ->join('user_roles as ur', 'ur.role_id', '=', 'r.id')
+                ->where('ur.user_id', $currentUserId)
+                ->whereIn('r.slug', ['admin', 'super-admin'])
+                ->exists();
+
+            $isOwner = (int) $property->owner_id === $currentUserId;
+
+            if (!$isAdmin && !$isOwner) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Property not found',
+                ], 404);
+            }
         }
 
         /*
@@ -1228,6 +1266,36 @@ $property->primary_action = match ($property->action_type) {
             })
             ->values()
             ->all();
+            /*
+|--------------------------------------------------------------------------
+| AI Vibe Report
+|--------------------------------------------------------------------------
+*/
+
+$property->vibe_report = null;
+
+if (
+    $property->location &&
+    $property->location->latitude !== null &&
+    $property->location->longitude !== null
+) {
+    try {
+        $vibeAiService = app(VibeAiService::class);
+
+        $property->vibe_report = $vibeAiService->getVibeReport(
+            $property->id,
+            (float) $property->location->latitude,
+            (float) $property->location->longitude
+        );
+    } catch (Throwable $e) {
+        Log::warning('Vibe Report could not be generated', [
+            'property_id' => $property->id,
+            'error' => $e->getMessage(),
+        ]);
+
+        $property->vibe_report = null;
+    }
+}
 
         return response()->json([
             'success' => true,

@@ -3,294 +3,232 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Services\VibeAiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
 class AIContextualSearchController extends Controller
 {
+    public function __construct(
+        private VibeAiService $aiService
+    ) {}
+
     public function search(Request $request): JsonResponse
     {
         try {
-            $request->validate([
+            $validated = $request->validate([
                 'query' => ['required', 'string', 'min:2', 'max:500'],
+                'language' => ['nullable', 'string', 'in:en,ar'],
             ]);
 
-            $searchText = trim($request->input('query'));
-            $normalizedText = mb_strtolower($searchText);
+            $searchText = trim($validated['query']);
+            $language = $validated['language'] ?? $this->detectLanguage($searchText);
 
             /*
             |--------------------------------------------------------------------------
-            | Detect Property Type
+            | 1. Let FastAPI understand the natural-language request
             |--------------------------------------------------------------------------
             */
 
-            $typeKeywords = [
-                'Apartment' => [
-                    'apartment',
-                    'apartments',
-                    'flat',
-                    'flats',
-                ],
+            $aiResponse = $this->aiService->parseSearchQuery(
+                $searchText,
+                $language
+            );
 
-                'Villa' => [
-                    'villa',
-                    'villas',
-                ],
-
-                'Penthouse' => [
-                    'penthouse',
-                    'penthouses',
-                ],
-
-                'Townhouse' => [
-                    'townhouse',
-                    'townhouses',
-                    'town house',
-                    'town houses',
-                ],
-            ];
-
-            $detectedType = null;
-
-            foreach ($typeKeywords as $type => $keywords) {
-                foreach ($keywords as $keyword) {
-                    if (str_contains($normalizedText, $keyword)) {
-                        $detectedType = $type;
-                        break 2;
-                    }
-                }
+            if (!$aiResponse) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $language === 'ar'
+                        ? 'تعذر تحليل طلب البحث حاليًا'
+                        : 'Could not understand the search request',
+                ], 503);
             }
-
 
             /*
             |--------------------------------------------------------------------------
-            | Detect Bedrooms
+            | 2. Extract AI filters
             |--------------------------------------------------------------------------
             */
 
-            $bedrooms = null;
+            $propertyType = $aiResponse['property_type'] ?? null;
+            $maxBudget = $aiResponse['max_budget'] ?? null;
+            $minBudget = $aiResponse['min_budget'] ?? null;
+            $currency = $aiResponse['budget_currency'] ?? null;
 
-            if (
-                preg_match(
-                    '/(\d+)\s*(bedroom|bedrooms|bed|beds|br)\b/i',
-                    $normalizedText,
-                    $matches
-                )
-            ) {
-                $bedrooms = (int) $matches[1];
-            }
+            $minBedrooms = $aiResponse['min_bedrooms'] ?? null;
+            $maxBedrooms = $aiResponse['max_bedrooms'] ?? null;
 
+            $locationHint = $aiResponse['location_hint'] ?? null;
+
+            $actionType =
+                $aiResponse['action_type']
+                ?? $aiResponse['listing_type']
+                ?? $aiResponse['purpose']
+                ?? null;
+
+            $confidence = $aiResponse['confidence'] ?? null;
+
+            $needsClarification =
+                (bool) ($aiResponse['needs_clarification'] ?? false);
+
+            $vibeTags = $aiResponse['vibe_tags'] ?? [];
+            $requiredAmenities =
+                $aiResponse['required_amenities'] ?? [];
 
             /*
             |--------------------------------------------------------------------------
-            | Detect Bathrooms
+            | 3. Resolve property type from our own database
             |--------------------------------------------------------------------------
             */
 
-            $bathrooms = null;
+            $typeId = null;
+            $resolvedPropertyType = null;
 
-            if (
-                preg_match(
-                    '/(\d+)\s*(bathroom|bathrooms|bath|baths)\b/i',
-                    $normalizedText,
-                    $matches
-                )
-            ) {
-                $bathrooms = (int) $matches[1];
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Detect Price
-            |--------------------------------------------------------------------------
-            */
-
-            $minPrice = null;
-            $maxPrice = null;
-
-            if (
-                preg_match(
-                    '/(?:under|below|less than|max(?:imum)?|up to)\s*(?:aed\s*)?([\d,.]+)\s*(million|m|k)?/i',
-                    $normalizedText,
-                    $matches
-                )
-            ) {
-                $maxPrice = $this->normalizePrice(
-                    $matches[1],
-                    $matches[2] ?? null
-                );
-            }
-
-            if (
-                preg_match(
-                    '/(?:over|above|more than|min(?:imum)?|starting from)\s*(?:aed\s*)?([\d,.]+)\s*(million|m|k)?/i',
-                    $normalizedText,
-                    $matches
-                )
-            ) {
-                $minPrice = $this->normalizePrice(
-                    $matches[1],
-                    $matches[2] ?? null
-                );
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Detect Neighborhood
-            |--------------------------------------------------------------------------
-            */
-
-            $neighborhoods = DB::table('neighborhoods')
-                ->select([
-                    'id',
-                    'name',
-                ])
-                ->get();
-
-            $detectedNeighborhood = null;
-
-            foreach ($neighborhoods as $neighborhood) {
-                if (
-                    str_contains(
-                        $normalizedText,
-                        mb_strtolower($neighborhood->name)
+            if (!empty($propertyType)) {
+                $type = DB::table('property_types')
+                    ->whereRaw(
+                        'LOWER(name) = ?',
+                        [mb_strtolower(trim($propertyType))]
                     )
-                ) {
-                    $detectedNeighborhood = $neighborhood;
-                    break;
+                    ->first();
+
+                if ($type) {
+                    $typeId = (int) $type->id;
+                    $resolvedPropertyType = $type->name;
                 }
             }
 
-
             /*
             |--------------------------------------------------------------------------
-            | Detect Features
+            | 4. Resolve location in English or Arabic
             |--------------------------------------------------------------------------
             */
 
-            $availableFeatures = DB::table('property_features')
-                ->select([
-                    'id',
-                    'name',
-                    'category',
-                ])
-                ->get();
+            $neighborhoodId = null;
+            $neighborhoodEn = null;
+            $neighborhoodAr = null;
 
-            $featureAliases = [
-                'Swimming Pool' => [
-                    'swimming pool',
-                    'pool',
-                ],
+            if (!empty($locationHint)) {
+                $normalizedLocation = mb_strtolower(trim($locationHint));
 
-                'Gym' => [
-                    'gym',
-                    'fitness',
-                    'fitness center',
-                ],
+                $neighborhood = DB::table('neighborhoods as n')
+                    ->leftJoin(
+                        'neighborhood_translations as nt_en',
+                        function ($join) {
+                            $join->on(
+                                'nt_en.neighborhood_id',
+                                '=',
+                                'n.id'
+                            )->where(
+                                'nt_en.language_code',
+                                '=',
+                                'en'
+                            );
+                        }
+                    )
+                    ->leftJoin(
+                        'neighborhood_translations as nt_ar',
+                        function ($join) {
+                            $join->on(
+                                'nt_ar.neighborhood_id',
+                                '=',
+                                'n.id'
+                            )->where(
+                                'nt_ar.language_code',
+                                '=',
+                                'ar'
+                            );
+                        }
+                    )
+                    ->where(function ($query) use ($normalizedLocation) {
+                        $query
+                            ->whereRaw(
+                                'LOWER(n.name) = ?',
+                                [$normalizedLocation]
+                            )
+                            ->orWhereRaw(
+                                'LOWER(nt_en.name) = ?',
+                                [$normalizedLocation]
+                            )
+                            ->orWhereRaw(
+                                'LOWER(nt_ar.name) = ?',
+                                [$normalizedLocation]
+                            )
+                            ->orWhereRaw(
+                                'LOWER(n.name) LIKE ?',
+                                ['%' . $normalizedLocation . '%']
+                            )
+                            ->orWhereRaw(
+                                'LOWER(nt_en.name) LIKE ?',
+                                ['%' . $normalizedLocation . '%']
+                            )
+                            ->orWhereRaw(
+                                'LOWER(nt_ar.name) LIKE ?',
+                                ['%' . $normalizedLocation . '%']
+                            );
+                    })
+                    ->select([
+                        'n.id',
+                        'n.name',
+                        DB::raw(
+                            'COALESCE(nt_en.name, n.name) as name_en'
+                        ),
+                        'nt_ar.name as name_ar',
+                    ])
+                    ->first();
 
-                'Parking' => [
-                    'parking',
-                    'car park',
-                    'garage',
-                ],
+                if ($neighborhood) {
+                    $neighborhoodId = (int) $neighborhood->id;
+                    $neighborhoodEn =
+                        $neighborhood->name_en
+                        ?: $neighborhood->name;
 
-                '24/7 Security' => [
-                    'security',
-                    '24/7 security',
-                    '24 hour security',
-                ],
-
-                'Balcony' => [
-                    'balcony',
-                ],
-
-                'Central Air Conditioning' => [
-                    'air conditioning',
-                    'air conditioner',
-                    'central ac',
-                    'central air',
-                    'a/c',
-                    'ac',
-                ],
-
-                'Elevator' => [
-                    'elevator',
-                    'lift',
-                ],
-
-                'Concierge' => [
-                    'concierge',
-                ],
-
-                'Kids Play Area' => [
-                    'kids play area',
-                    'children play area',
-                    'play area',
-                ],
-
-                'Garden' => [
-                    'garden',
-                ],
-
-                'Sea View' => [
-                    'sea view',
-                    'ocean view',
-                    'water view',
-                ],
-
-                'Smart Home' => [
-                    'smart home',
-                    'smart house',
-                ],
-
-                'BBQ Area' => [
-                    'bbq',
-                    'barbecue',
-                    'barbeque',
-                ],
-
-                'Jacuzzi' => [
-                    'jacuzzi',
-                    'hot tub',
-                ],
-            ];
-
-            $detectedFeatures = collect();
-
-            foreach ($availableFeatures as $feature) {
-                $aliases = $featureAliases[$feature->name]
-                    ?? [mb_strtolower($feature->name)];
-
-                foreach ($aliases as $alias) {
-                    if (
-                        str_contains(
-                            $normalizedText,
-                            mb_strtolower($alias)
-                        )
-                    ) {
-                        $detectedFeatures->push($feature);
-                        break;
-                    }
+                    $neighborhoodAr =
+                        $neighborhood->name_ar;
                 }
             }
 
-            $detectedFeatures = $detectedFeatures
-                ->unique('id')
-                ->values();
-
-
             /*
             |--------------------------------------------------------------------------
-            | Load Properties
+            | 5. Normalize action type
             |--------------------------------------------------------------------------
             */
 
-            $properties = DB::table('properties as p')
+            $normalizedActionType = null;
+
+            if (!empty($actionType)) {
+                $action = mb_strtolower(trim((string) $actionType));
+
+                if (in_array(
+                    $action,
+                    ['buy', 'sale', 'purchase', 'for sale'],
+                    true
+                )) {
+                    $normalizedActionType = 'buy';
+                } elseif (in_array(
+                    $action,
+                    ['rent', 'rental', 'lease', 'for rent'],
+                    true
+                )) {
+                    $normalizedActionType = 'rent';
+                } elseif (in_array(
+                    $action,
+                    ['booking', 'book'],
+                    true
+                )) {
+                    $normalizedActionType = 'booking';
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 6. Build Laravel database query
+            |--------------------------------------------------------------------------
+            */
+
+            $propertiesQuery = DB::table('properties as p')
                 ->leftJoin(
                     'property_types as pt',
                     'pt.id',
@@ -309,47 +247,156 @@ class AIContextualSearchController extends Controller
                     '=',
                     'pl.neighborhood_id'
                 )
-                ->whereNull('p.deleted_at')
-                ->where(
-                    'p.slug',
-                    'like',
-                    'demo-dubai-%'
+                ->leftJoin(
+                    'neighborhood_translations as nt_en',
+                    function ($join) {
+                        $join->on(
+                            'nt_en.neighborhood_id',
+                            '=',
+                            'n.id'
+                        )->where(
+                            'nt_en.language_code',
+                            '=',
+                            'en'
+                        );
+                    }
                 )
+                ->leftJoin(
+                    'neighborhood_translations as nt_ar',
+                    function ($join) {
+                        $join->on(
+                            'nt_ar.neighborhood_id',
+                            '=',
+                            'n.id'
+                        )->where(
+                            'nt_ar.language_code',
+                            '=',
+                            'ar'
+                        );
+                    }
+                )
+                ->whereNull('p.deleted_at');
+
+            /*
+            |--------------------------------------------------------------------------
+            | 7. Apply AI filters
+            |--------------------------------------------------------------------------
+            */
+
+            if ($typeId !== null) {
+                $propertiesQuery->where(
+                    'p.type_id',
+                    $typeId
+                );
+            }
+
+            if ($minBudget !== null) {
+                $propertiesQuery->where(
+                    'p.price',
+                    '>=',
+                    (float) $minBudget
+                );
+            }
+
+            if ($maxBudget !== null) {
+                $propertiesQuery->where(
+                    'p.price',
+                    '<=',
+                    (float) $maxBudget
+                );
+            }
+
+            if ($minBedrooms !== null) {
+                $propertiesQuery->where(
+                    'p.bedrooms',
+                    '>=',
+                    (int) $minBedrooms
+                );
+            }
+
+            if ($maxBedrooms !== null) {
+                $propertiesQuery->where(
+                    'p.bedrooms',
+                    '<=',
+                    (int) $maxBedrooms
+                );
+            }
+
+            if ($neighborhoodId !== null) {
+                $propertiesQuery->where(
+                    'pl.neighborhood_id',
+                    $neighborhoodId
+                );
+            }
+
+            if ($normalizedActionType !== null) {
+                $propertiesQuery->where(
+                    'p.action_type',
+                    $normalizedActionType
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 8. Get matching properties
+            |--------------------------------------------------------------------------
+            */
+
+            $properties = $propertiesQuery
                 ->select([
                     'p.id',
+                    'p.owner_id',
+                    'p.agency_id',
                     'p.type_id',
                     'p.category_id',
                     'p.status_id',
+                    'p.property_condition',
+                    'p.action_type',
                     'p.is_featured',
                     'p.title',
                     'p.slug',
                     'p.description',
+                    'p.virtual_tour_url',
                     'p.price',
                     'p.currency',
                     'p.rent_frequency',
                     'p.area_sqft',
                     'p.bedrooms',
                     'p.bathrooms',
+                    'p.floor_number',
+                    'p.total_floors',
+                    'p.year_built',
                     'p.is_furnished',
                     'p.availability_date',
                     'p.listing_date',
 
                     'pt.name as property_type',
 
+                    'pl.id as location_id',
                     'pl.address_line_1',
+                    'pl.address_line_2',
+                    'pl.building_name',
                     'pl.latitude',
                     'pl.longitude',
+                    'pl.neighborhood_id',
+                    'pl.street_id',
 
-                    'n.id as neighborhood_id',
-                    'n.name as neighborhood',
+                    'n.name as neighborhood_name',
+
+                    DB::raw(
+                        'COALESCE(nt_en.name, n.name) as neighborhood_en'
+                    ),
+
+                    'nt_ar.name as neighborhood_ar',
                 ])
-                ->distinct()
+                ->orderByDesc('p.is_featured')
+                ->orderByDesc('p.listing_date')
+                ->limit(50)
                 ->get();
-
 
             /*
             |--------------------------------------------------------------------------
-            | Load Images + Features
+            | 9. Arabic property translations
             |--------------------------------------------------------------------------
             */
 
@@ -358,8 +405,34 @@ class AIContextualSearchController extends Controller
                 ->values()
                 ->all();
 
+            $propertyTranslations = collect();
+
+            if (
+                $language === 'ar'
+                && !empty($propertyIds)
+            ) {
+                $propertyTranslations = DB::table(
+                    'property_translations'
+                )
+                    ->whereIn(
+                        'property_id',
+                        $propertyIds
+                    )
+                    ->where(
+                        'language_code',
+                        'ar'
+                    )
+                    ->get()
+                    ->keyBy('property_id');
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 10. Load property images
+            |--------------------------------------------------------------------------
+            */
+
             $images = collect();
-            $propertyFeatures = collect();
 
             if (!empty($propertyIds)) {
                 $images = DB::table('property_images')
@@ -378,396 +451,195 @@ class AIContextualSearchController extends Controller
                     ->orderBy('display_order')
                     ->get()
                     ->groupBy('property_id');
-
-
-                $propertyFeatures = DB::table(
-                    'property_feature_values as pfv'
-                )
-                    ->join(
-                        'property_features as pf',
-                        'pf.id',
-                        '=',
-                        'pfv.feature_id'
-                    )
-                    ->whereIn(
-                        'pfv.property_id',
-                        $propertyIds
-                    )
-                    ->select([
-                        'pfv.property_id',
-                        'pf.id',
-                        'pf.name',
-                        'pf.category',
-                        'pfv.feature_value',
-                    ])
-                    ->get()
-                    ->groupBy('property_id');
             }
-
 
             /*
             |--------------------------------------------------------------------------
-            | Calculate Match Score
+            | 11. Format results
             |--------------------------------------------------------------------------
             */
 
-            $scoredProperties = $properties
+            $properties = $properties
                 ->map(function ($property) use (
-                    $images,
-                    $propertyFeatures,
-                    $detectedType,
-                    $bedrooms,
-                    $bathrooms,
-                    $detectedNeighborhood,
-                    $minPrice,
-                    $maxPrice,
-                    $detectedFeatures
+                    $language,
+                    $propertyTranslations,
+                    $images
                 ) {
-                    $propertyImages = $images->get(
-                        $property->id,
-                        collect()
-                    );
+                    if ($language === 'ar') {
+                        $translation =
+                            $propertyTranslations->get(
+                                $property->id
+                            );
 
-                    $features = $propertyFeatures->get(
-                        $property->id,
-                        collect()
-                    );
+                        if ($translation) {
+                            if (!empty($translation->title)) {
+                                $property->title =
+                                    $translation->title;
+                            }
 
-                    $featureNames = $features
-                        ->pluck('name')
-                        ->map(fn ($name) => mb_strtolower($name))
-                        ->values();
-
-
-                    $score = 0;
-                    $possibleScore = 0;
-
-                    $matched = [];
-                    $missing = [];
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Property Type Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($detectedType !== null) {
-                        $possibleScore += 25;
-
-                        if (
-                            mb_strtolower($property->property_type)
-                            === mb_strtolower($detectedType)
-                        ) {
-                            $score += 25;
-
-                            $matched[] = $detectedType;
-                        } else {
-                            $missing[] = $detectedType;
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Neighborhood Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($detectedNeighborhood !== null) {
-                        $possibleScore += 25;
-
-                        if (
-                            (int) $property->neighborhood_id
-                            === (int) $detectedNeighborhood->id
-                        ) {
-                            $score += 25;
-
-                            $matched[] =
-                                $detectedNeighborhood->name;
-                        } else {
-                            $missing[] =
-                                $detectedNeighborhood->name;
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Bedrooms Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($bedrooms !== null) {
-                        $possibleScore += 20;
-
-                        if (
-                            (int) $property->bedrooms
-                            === (int) $bedrooms
-                        ) {
-                            $score += 20;
-
-                            $matched[] =
-                                $bedrooms . ' bedrooms';
-                        } else {
-                            $missing[] =
-                                $bedrooms . ' bedrooms';
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Bathrooms Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($bathrooms !== null) {
-                        $possibleScore += 10;
-
-                        if (
-                            (int) $property->bathrooms
-                            === (int) $bathrooms
-                        ) {
-                            $score += 10;
-
-                            $matched[] =
-                                $bathrooms . ' bathrooms';
-                        } else {
-                            $missing[] =
-                                $bathrooms . ' bathrooms';
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Minimum Price Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($minPrice !== null) {
-                        $possibleScore += 10;
-
-                        if (
-                            (float) $property->price
-                            >= $minPrice
-                        ) {
-                            $score += 10;
-
-                            $matched[] =
-                                'minimum price';
-                        } else {
-                            $missing[] =
-                                'minimum price';
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Maximum Price Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($maxPrice !== null) {
-                        $possibleScore += 10;
-
-                        if (
-                            (float) $property->price
-                            <= $maxPrice
-                        ) {
-                            $score += 10;
-
-                            $matched[] =
-                                'maximum price';
-                        } else {
-                            $missing[] =
-                                'maximum price';
-                        }
-                    }
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Features Score
-                    |--------------------------------------------------------------------------
-                    */
-
-                    if ($detectedFeatures->isNotEmpty()) {
-                        foreach ($detectedFeatures as $feature) {
-                            $possibleScore += 15;
-
-                            $featureName =
-                                mb_strtolower($feature->name);
-
-                            if (
-                                $featureNames->contains(
-                                    $featureName
-                                )
-                            ) {
-                                $score += 15;
-
-                                $matched[] =
-                                    $feature->name;
-                            } else {
-                                $missing[] =
-                                    $feature->name;
+                            if (!empty($translation->description)) {
+                                $property->description =
+                                    $translation->description;
                             }
                         }
                     }
 
+                    $propertyImages =
+                        $images->get(
+                            $property->id,
+                            collect()
+                        );
 
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Final Percentage
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $matchScore = $possibleScore > 0
-                        ? (int) round(
-                            ($score / $possibleScore) * 100
-                        )
-                        : 0;
-
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | Add Property Data
-                    |--------------------------------------------------------------------------
-                    */
-
-                    $property->primary_image =
+                    $primaryImage =
                         $propertyImages->firstWhere(
                             'is_primary',
                             1
                         )
                         ?? $propertyImages->first();
 
-                    $property->features =
-                        $features->values();
+                    $property->primary_image =
+                        $primaryImage
+                            ? $primaryImage->image_url
+                            : null;
 
-                    $property->match_score =
-                        $matchScore;
+                    $property->images =
+                        $propertyImages
+                            ->pluck('image_url')
+                            ->values();
 
-                    $property->matched =
-                        array_values(
-                            array_unique($matched)
-                        );
+                    $property->location = [
+                        'id' =>
+                            $property->location_id,
 
-                    $property->missing =
-                        array_values(
-                            array_unique($missing)
-                        );
+                        'property_id' =>
+                            $property->id,
 
-                    $property->is_exact_match =
-                        $possibleScore > 0
-                        && $score === $possibleScore;
+                        'address_line_1' =>
+                            $property->address_line_1,
+
+                        'address_line_2' =>
+                            $property->address_line_2,
+
+                        'building_name' =>
+                            $property->building_name,
+
+                        'latitude' =>
+                            $property->latitude,
+
+                        'longitude' =>
+                            $property->longitude,
+
+                        'neighborhood_id' =>
+                            $property->neighborhood_id,
+
+                        'neighborhood_name' =>
+                            $property->neighborhood_name,
+
+                        'neighborhood_en' =>
+                            $property->neighborhood_en,
+
+                        'neighborhood_ar' =>
+                            $property->neighborhood_ar,
+
+                        'street_id' =>
+                            $property->street_id,
+                    ];
+
+                    unset(
+                        $property->location_id,
+                        $property->address_line_1,
+                        $property->address_line_2,
+                        $property->building_name,
+                        $property->latitude,
+                        $property->longitude,
+                        $property->neighborhood_id,
+                        $property->neighborhood_name,
+                        $property->neighborhood_en,
+                        $property->neighborhood_ar,
+                        $property->street_id
+                    );
 
                     return $property;
-                });
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Exact Matches
-            |--------------------------------------------------------------------------
-            */
-
-            $exactMatches = $scoredProperties
-                ->filter(
-                    fn ($property) =>
-                        $property->is_exact_match === true
-                )
-                ->sortByDesc('is_featured')
+                })
                 ->values();
 
-
             /*
             |--------------------------------------------------------------------------
-            | Fallback Recommendations
+            | 12. Response
             |--------------------------------------------------------------------------
             */
+$clarificationMessage = null;
 
-            if ($exactMatches->isNotEmpty()) {
-                $resultType = 'exact';
-
-                $results = $exactMatches
-                    ->take(20)
-                    ->values();
-            } else {
-                $resultType = 'recommended';
-
-                $results = $scoredProperties
-                    ->filter(
-                        fn ($property) =>
-                            $property->match_score > 0
-                    )
-                    ->sort(function ($a, $b) {
-                        if (
-                            $a->match_score
-                            === $b->match_score
-                        ) {
-                            return $b->is_featured
-                                <=> $a->is_featured;
-                        }
-
-                        return $b->match_score
-                            <=> $a->match_score;
-                    })
-                    ->take(20)
-                    ->values();
-            }
-
-
-            /*
-            |--------------------------------------------------------------------------
-            | Response
-            |--------------------------------------------------------------------------
-            */
-
+if ($needsClarification) {
+    $clarificationMessage = $language === 'ar'
+        ? 'يرجى تحديد تفاصيل أكثر مثل الشراء أو الإيجار، المنطقة والميزانية.'
+        : 'Please provide more details such as buy or rent, location, and budget.';
+}
             return response()->json([
                 'success' => true,
 
                 'query' => $searchText,
 
-                'search_mode' => $resultType,
+                'language' => $language,
 
-                'understood' => [
+                'ai_understanding' => [
                     'property_type' =>
-                        $detectedType,
+                        $resolvedPropertyType
+                        ?? $propertyType,
 
-                    'bedrooms' =>
-                        $bedrooms,
+                    'type_id' =>
+                        $typeId,
 
-                    'bathrooms' =>
-                        $bathrooms,
+                    'min_budget' =>
+                        $minBudget,
 
-                    'neighborhood' =>
-                        $detectedNeighborhood
-                            ? $detectedNeighborhood->name
-                            : null,
+                    'max_budget' =>
+                        $maxBudget,
 
-                    'min_price' =>
-                        $minPrice,
+                    'budget_currency' =>
+                        $currency,
 
-                    'max_price' =>
-                        $maxPrice,
+                    'min_bedrooms' =>
+                        $minBedrooms,
 
-                    'features' =>
-                        $detectedFeatures
-                            ->pluck('name')
-                            ->values(),
+                    'max_bedrooms' =>
+                        $maxBedrooms,
+
+                    'location_hint' =>
+                        $locationHint,
+
+                    'neighborhood_id' =>
+                        $neighborhoodId,
+
+                    'neighborhood_en' =>
+                        $neighborhoodEn,
+
+                    'neighborhood_ar' =>
+                        $neighborhoodAr,
+
+                    'action_type' =>
+                        $normalizedActionType,
+
+                    'vibe_tags' =>
+                        $vibeTags,
+
+                    'required_amenities' =>
+                        $requiredAmenities,
+
+                    'confidence' =>
+                        $confidence,
+
+                    'needs_clarification' =>
+                        $needsClarification,
+                        'clarification_message' =>
+    $clarificationMessage,
                 ],
 
-                'exact_matches' =>
-                    $exactMatches->count(),
-
                 'total_results' =>
-                    $results->count(),
+                    $properties->count(),
 
                 'properties' =>
-                    $results,
+                    $properties,
             ]);
 
         } catch (Throwable $e) {
@@ -781,38 +653,14 @@ class AIContextualSearchController extends Controller
         }
     }
 
-
-    /*
-    |--------------------------------------------------------------------------
-    | Normalize Price
-    |--------------------------------------------------------------------------
-    */
-
-    private function normalizePrice(
-        string $value,
-        ?string $suffix
-    ): float {
-        $price = (float) str_replace(
-            [',', ' '],
-            '',
-            $value
-        );
-
-        $suffix = mb_strtolower(
-            trim($suffix ?? '')
-        );
-
-        if ($suffix === 'k') {
-            $price *= 1000;
-        }
-
-        if (
-            $suffix === 'm'
-            || $suffix === 'million'
-        ) {
-            $price *= 1000000;
-        }
-
-        return $price;
+    private function detectLanguage(
+        string $text
+    ): string {
+        return preg_match(
+            '/[\x{0600}-\x{06FF}]/u',
+            $text
+        )
+            ? 'ar'
+            : 'en';
     }
 }
