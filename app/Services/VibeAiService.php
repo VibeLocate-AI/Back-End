@@ -2,8 +2,7 @@
 
 namespace App\Services;
 
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\Response;
+
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -11,7 +10,7 @@ use Throwable;
 
 class VibeAiService
 {
-    protected string $baseUrl;
+    private string $baseUrl;
 
     public function __construct()
     {
@@ -21,46 +20,52 @@ class VibeAiService
         );
     }
 
-    /**
-     * Send natural-language property search text to the AI service.
-     */
-    public function parseSearchQuery(
-        string $rawText,
-        ?string $language = null
-    ): ?array {
-        $startedAt = microtime(true);
+    public function parseSearchQuery(string $rawText, string $language = 'en'): ?array
+    {
         $endpoint = 'ai-contextual';
+        $url = $this->baseUrl . '/api/search/ai-contextual';
+
+        $startedAt = microtime(true);
 
         try {
-            $payload = [
-                'raw_text' => $rawText,
-            ];
-
-            if ($language !== null) {
-                $payload['language'] = $language;
-            }
-
             $response = Http::timeout(30)
                 ->acceptJson()
-                ->asJson()
-                ->post(
-                    "{$this->baseUrl}/api/search/ai-contextual",
-                    $payload
-                );
+                ->post($url, [
+                    'raw_text' => $rawText,
+                    'language' => $language,
+                ]);
 
-            $elapsedMs = $this->elapsedMs($startedAt);
-            $json = $response->json();
-
-            $this->recordAiLog(
-                endpoint: $endpoint,
-                response: $response,
-                executionTimeMs: $elapsedMs,
-                json: is_array($json) ? $json : null
-            );
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
 
             if ($response->successful()) {
-                return is_array($json) ? $json : [];
+                $data = $response->json();
+
+                $this->logApiRequest(
+                    endpoint: $endpoint,
+                    responseCode: $response->status(),
+                    executionTimeMs: $latencyMs,
+                    outcome: 'success',
+                    model: $this->extractModel($data),
+                    fallbackTriggered: $this->extractFallbackTriggered($data)
+                );
+
+                return is_array($data) ? $data : null;
             }
+
+            $outcome = $this->detectOutcome(
+                $response->status(),
+                $response->json()
+            );
+
+            $this->logApiRequest(
+                endpoint: $endpoint,
+                responseCode: $response->status(),
+                executionTimeMs: $latencyMs,
+                outcome: $outcome,
+                model: $this->extractModel($response->json()),
+                fallbackTriggered: $this->extractFallbackTriggered($response->json()),
+                errorMessage: $response->body()
+            );
 
             Log::error('Vibe AI contextual search failed', [
                 'status' => $response->status(),
@@ -68,225 +73,363 @@ class VibeAiService
             ]);
 
             return null;
-        } catch (ConnectionException $e) {
-            $this->recordAiException(
-                endpoint: $endpoint,
-                executionTimeMs: $this->elapsedMs($startedAt),
-                outcome: 'timeout',
-                exception: $e
-            );
 
-            Log::error('Vibe AI contextual search timeout', [
-                'message' => $e->getMessage(),
-            ]);
-
-            return null;
         } catch (Throwable $e) {
-            $this->recordAiException(
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+            $outcome = str_contains(
+                strtolower($e->getMessage()),
+                'timed out'
+            ) ? 'timeout' : 'other_error';
+
+            $this->logApiRequest(
                 endpoint: $endpoint,
-                executionTimeMs: $this->elapsedMs($startedAt),
-                outcome: 'other_error',
-                exception: $e
+                responseCode: $outcome === 'timeout' ? 504 : 500,
+                executionTimeMs: $latencyMs,
+                outcome: $outcome,
+                model: null,
+                fallbackTriggered: false,
+                errorMessage: $e->getMessage()
             );
 
-            Log::error('Vibe AI service exception', [
-                'message' => $e->getMessage(),
-            ]);
+            Log::error(
+                $outcome === 'timeout'
+                    ? 'Vibe AI contextual search timeout'
+                    : 'Vibe AI contextual search exception',
+                ['message' => $e->getMessage()]
+            );
 
             return null;
         }
     }
 
-    /**
-     * Request an AI vibe report for a property.
-     */
+    
     public function getVibeReport(
-        int|string $propertyId,
+        int $propertyId,
         float $latitude,
         float $longitude
     ): ?array {
-        $startedAt = microtime(true);
         $endpoint = 'properties/vibe-report';
+        $url = $this->baseUrl . '/api/properties/vibe-report';
+
+        $startedAt = microtime(true);
+
+        $neighborhoodId = DB::table('property_locations')
+            ->where('property_id', $propertyId)
+            ->value('neighborhood_id');
+
+        $this->setVibeReportPending(
+            $propertyId,
+            $neighborhoodId
+        );
 
         try {
             $response = Http::timeout(120)
                 ->acceptJson()
-                ->asJson()
-                ->post(
-                    "{$this->baseUrl}/api/properties/vibe-report",
+                ->post($url, [
+                    'property_id' => (string) $propertyId,
+                    'latitude' => $latitude,
+                    'longitude' => $longitude,
+                ]);
+
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                if (!is_array($data)) {
+                    $data = [];
+                }
+
+                $poiCount = $this->extractPoiCount($data);
+
+                DB::table('vibe_reports')->updateOrInsert(
+                    ['property_id' => (string) $propertyId,
+                    ],
                     [
-                        'property_id' => (string) $propertyId,
-                        'latitude' => $latitude,
-                        'longitude' => $longitude,
+                        'neighborhood_id' => $neighborhoodId,
+                        'status' => 'generated',
+                        'poi_count' => $poiCount,
+                        'report_data' => json_encode(
+                            $data,
+                            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                        ),
+                        'generated_at' => now(),
+                        'last_refreshed_at' => now(),
+                        'error_message' => null,
+                        'updated_at' => now(),
                     ]
                 );
 
-            $elapsedMs = $this->elapsedMs($startedAt);
-            $json = $response->json();
+                $this->logApiRequest(
+                    endpoint: $endpoint,
+                    responseCode: $response->status(),
+                    executionTimeMs: $latencyMs,
+                    outcome: 'success',
+                    model: $this->extractModel($data),
+                    fallbackTriggered: $this->extractFallbackTriggered($data)
+                );
 
-            $this->recordAiLog(
-                endpoint: $endpoint,
-                response: $response,
-                executionTimeMs: $elapsedMs,
-                json: is_array($json) ? $json : null
-            );
-
-            if ($response->successful()) {
-                return is_array($json) ? $json : [];
+                return $data;
             }
 
+            $outcome = $this->detectOutcome(
+                $response->status(),
+                $response->json()
+            );
+
+            $error = $response->body();
+
+            $this->markVibeReportFailed(
+                propertyId: $propertyId,
+                neighborhoodId: $neighborhoodId,
+                errorMessage: $error
+            );
+
+            $this->logApiRequest(
+                endpoint: $endpoint,
+                responseCode: $response->status(),
+                executionTimeMs: $latencyMs,
+                outcome: $outcome,
+                model: $this->extractModel($response->json()),
+                fallbackTriggered: $this->extractFallbackTriggered($response->json()),
+                errorMessage: $error
+            );
+
             Log::error('Vibe AI report failed', [
-                'property_id' => (string) $propertyId,
+               'property_id' => (string) $propertyId,
                 'status' => $response->status(),
-                'body' => $response->body(),
+                'body' => $error,
             ]);
 
             return null;
-        } catch (ConnectionException $e) {
-            $this->recordAiException(
-                endpoint: $endpoint,
-                executionTimeMs: $this->elapsedMs($startedAt),
-                outcome: 'timeout',
-                exception: $e
+
+        } catch (Throwable $e) {
+            $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
+
+            $outcome = str_contains(
+                strtolower($e->getMessage()),
+                'timed out'
+            ) ? 'timeout' : 'other_error';
+
+            $this->markVibeReportFailed(
+                propertyId: $propertyId,
+                neighborhoodId: $neighborhoodId,
+                errorMessage: $e->getMessage()
             );
 
-            Log::error('Vibe AI report timeout', [
-                'property_id' => (string) $propertyId,
-                'message' => $e->getMessage(),
-            ]);
-
-            return null;
-        } catch (Throwable $e) {
-            $this->recordAiException(
+            $this->logApiRequest(
                 endpoint: $endpoint,
-                executionTimeMs: $this->elapsedMs($startedAt),
-                outcome: 'other_error',
-                exception: $e
+                responseCode: $outcome === 'timeout' ? 504 : 500,
+                executionTimeMs: $latencyMs,
+                outcome: $outcome,
+                model: null,
+                fallbackTriggered: false,
+                errorMessage: $e->getMessage()
             );
 
-            Log::error('Vibe AI service exception', [
-                'property_id' => (string) $propertyId,
-                'message' => $e->getMessage(),
-            ]);
+            Log::error(
+                $outcome === 'timeout'
+                    ? 'Vibe AI report timeout'
+                    : 'Vibe AI report exception',
+                [
+                   'property_id' => (string) $propertyId,
+                    'message' => $e->getMessage(),
+                ]
+            );
 
             return null;
         }
     }
 
-    private function recordAiLog(
-        string $endpoint,
-        Response $response,
-        int $executionTimeMs,
-        ?array $json = null
+    private function setVibeReportPending(
+        int $propertyId,
+        ?int $neighborhoodId
     ): void {
-        try {
-            $outcome = $this->resolveOutcome($response, $json);
+        $existing = DB::table('vibe_reports')
+            ->where('property_id', $propertyId)
+            ->first();
 
-            DB::table('api_logs')->insert([
-                'endpoint' => $endpoint,
-                'method' => 'POST',
-                'response_code' => $response->status(),
-                'execution_time_ms' => $executionTimeMs,
-                'ip_address' => request()?->ip() ?: '127.0.0.1',
+        if ($existing) {
+            DB::table('vibe_reports')
+                ->where('property_id', $propertyId)
+                ->update([
+                    'neighborhood_id' => $neighborhoodId,
+                    'status' => 'pending',
+                    'error_message' => null,
+                    'updated_at' => now(),
+                ]);
 
-                'outcome' => $outcome,
-                'ai_model' => $this->extractModel($json),
-                'fallback_triggered' => $this->extractFallbackTriggered($json),
-                'error_message' => $response->successful()
-                    ? null
-                    : mb_substr($response->body(), 0, 2000),
-
-                'created_at' => now(),
-            ]);
-        } catch (Throwable $e) {
-            Log::warning('Failed to write AI api log', [
-                'error' => $e->getMessage(),
-            ]);
+            return;
         }
+
+        DB::table('vibe_reports')->insert([
+            'property_id' => (string) $propertyId,
+            'neighborhood_id' => $neighborhoodId,
+            'status' => 'pending',
+            'poi_count' => 0,
+            'report_data' => null,
+            'generated_at' => null,
+            'last_refreshed_at' => null,
+            'error_message' => null,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
     }
 
-    private function recordAiException(
-        string $endpoint,
-        int $executionTimeMs,
-        string $outcome,
-        Throwable $exception
+    private function markVibeReportFailed(
+        int $propertyId,
+        ?int $neighborhoodId,
+        string $errorMessage
     ): void {
-        try {
-            DB::table('api_logs')->insert([
-                'endpoint' => $endpoint,
-                'method' => 'POST',
-                'response_code' => $outcome === 'timeout' ? 504 : 500,
-                'execution_time_ms' => $executionTimeMs,
-                'ip_address' => request()?->ip() ?: '127.0.0.1',
-
-                'outcome' => $outcome,
-                'ai_model' => null,
-                'fallback_triggered' => 0,
-                'error_message' => mb_substr($exception->getMessage(), 0, 2000),
-
-                'created_at' => now(),
-            ]);
-        } catch (Throwable $e) {
-            Log::warning('Failed to write AI exception log', [
-                'error' => $e->getMessage(),
-            ]);
-        }
+        DB::table('vibe_reports')->updateOrInsert(
+            [
+                'property_id' => (string) $propertyId,
+            ],
+            [
+                'neighborhood_id' => $neighborhoodId,
+                'status' => 'failed',
+                'error_message' => mb_substr($errorMessage, 0, 5000),
+                'last_refreshed_at' => now(),
+                'updated_at' => now(),
+            ]
+        );
     }
 
-    private function resolveOutcome(
-        Response $response,
-        ?array $json
+    private function extractPoiCount(array $data): int
+    {
+        $possibleKeys = [
+            'pois',
+            'poi',
+            'points_of_interest',
+            'nearby_places',
+            'places',
+            'amenities_nearby',
+        ];
+
+        foreach ($possibleKeys as $key) {
+            if (
+                array_key_exists($key, $data)
+                && is_array($data[$key])
+            ) {
+                return count($data[$key]);
+            }
+        }
+
+        if (isset($data['data']) && is_array($data['data'])) {
+            foreach ($possibleKeys as $key) {
+                if (
+                    array_key_exists($key, $data['data'])
+                    && is_array($data['data'][$key])
+                ) {
+                    return count($data['data'][$key]);
+                }
+            }
+        }
+
+        if (isset($data['poi_count']) && is_numeric($data['poi_count'])) {
+            return (int) $data['poi_count'];
+        }
+
+        if (
+            isset($data['data']['poi_count'])
+            && is_numeric($data['data']['poi_count'])
+        ) {
+            return (int) $data['data']['poi_count'];
+        }
+
+        return 0;
+    }
+
+    private function detectOutcome(
+        int $statusCode,
+        mixed $body
     ): string {
-        $reportedOutcome = data_get($json, 'outcome');
-
-        if (is_string($reportedOutcome) && $reportedOutcome !== '') {
-            return $reportedOutcome;
-        }
-
-        if ($response->status() === 429) {
+        if ($statusCode === 429) {
             return 'rate_limited';
         }
 
-        if (in_array($response->status(), [408, 504], true)) {
+        if (in_array($statusCode, [408, 504], true)) {
             return 'timeout';
         }
 
-        if ($response->successful()) {
-            $choices = data_get($json, 'choices');
-
-            if (is_array($choices) && count($choices) === 0) {
+        if (is_array($body)) {
+            if (
+                isset($body['choices'])
+                && is_array($body['choices'])
+                && count($body['choices']) === 0
+            ) {
                 return 'no_choices';
             }
 
-            return 'success';
+            if (
+                isset($body['data']['choices'])
+                && is_array($body['data']['choices'])
+                && count($body['data']['choices']) === 0
+            ) {
+                return 'no_choices';
+            }
         }
 
         return 'other_error';
     }
 
-    private function extractModel(?array $json): ?string
+    private function extractModel(mixed $data): ?string
     {
-        $model = data_get($json, 'model')
-            ?? data_get($json, 'meta.model')
-            ?? data_get($json, 'metadata.model');
+        if (!is_array($data)) {
+            return config('services.vibe_ai.model');
+        }
 
-        return is_string($model) && $model !== ''
-            ? $model
-            : null;
+        return $data['model']
+            ?? $data['ai_model']
+            ?? $data['data']['model']
+            ?? config('services.vibe_ai.model');
     }
 
-    private function extractFallbackTriggered(?array $json): int
+    private function extractFallbackTriggered(mixed $data): bool
     {
-        $value = data_get($json, 'fallback_triggered')
-            ?? data_get($json, 'meta.fallback_triggered')
-            ?? data_get($json, 'metadata.fallback_triggered')
-            ?? false;
+        if (!is_array($data)) {
+            return false;
+        }
 
-        return filter_var($value, FILTER_VALIDATE_BOOLEAN) ? 1 : 0;
+        return (bool) (
+            $data['fallback_triggered']
+            ?? $data['data']['fallback_triggered']
+            ?? false
+        );
     }
 
-    private function elapsedMs(float $startedAt): int
-    {
-        return (int) round((microtime(true) - $startedAt) * 1000);
+    private function logApiRequest(
+        string $endpoint,
+        int $responseCode,
+        int $executionTimeMs,
+        string $outcome,
+        ?string $model = null,
+        bool $fallbackTriggered = false,
+        ?string $errorMessage = null
+    ): void {
+        try {
+            DB::table('api_logs')->insert([
+                'user_id' => auth()->id(),
+                'endpoint' => $endpoint,
+                'method' => 'POST',
+                'request_headers' => null,
+                'request_body' => null,
+                'response_code' => $responseCode,
+                'execution_time_ms' => $executionTimeMs,
+                'ip_address' => request()?->ip(),
+                'outcome' => $outcome,
+                'ai_model' => $model,
+                'fallback_triggered' => $fallbackTriggered,
+                'error_message' => $errorMessage
+                    ? mb_substr($errorMessage, 0, 5000)
+                    : null,
+                'created_at' => now(),
+            ]);
+        } catch (Throwable $e) {
+            Log::warning('Unable to write AI api log', [
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 }

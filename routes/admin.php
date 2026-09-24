@@ -4,17 +4,30 @@ use App\Http\Controllers\Api\Admin\AdminAiHealthController;
 use App\Http\Controllers\Api\Admin\AdminDashboardController;
 use App\Http\Controllers\Api\Admin\AdminPropertyController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
+use App\Http\Controllers\Api\Admin\AdminVibeReportController;
+use App\Http\Controllers\Api\Admin\AdminReportController;
+
 use App\Http\Middleware\RequireRole;
 use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\Admin\AdminVibeReportController;
 
 Route::middleware([
-    
+
     'jwt',
     RequireRole::class . ':admin',
+
 ])->prefix('admin')->group(function () {
 
-    Route::get('/vibe-report/coverage', [AdminVibeReportController::class, 'coverage']);
+    /*
+    |--------------------------------------------------------------------------
+    | Vibe Report Coverage
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/vibe-report/coverage',
+        [AdminVibeReportController::class, 'coverage']
+    );
+
     /*
     |--------------------------------------------------------------------------
     | Dashboard
@@ -77,6 +90,27 @@ Route::middleware([
     Route::put(
         '/properties/{id}/reject',
         [AdminPropertyController::class, 'reject']
+    )->whereNumber('id');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reports / Complaints
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/reports',
+        [AdminReportController::class, 'index']
+    );
+
+    Route::get(
+        '/reports/{id}',
+        [AdminReportController::class, 'show']
+    )->whereNumber('id');
+
+    Route::put(
+        '/reports/{id}/status',
+        [AdminReportController::class, 'updateStatus']
     )->whereNumber('id');
 
 });

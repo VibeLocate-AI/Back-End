@@ -25,6 +25,7 @@ use App\Http\Controllers\Api\VerifyEmailController;
 use App\Http\Controllers\Api\VerifyResetOtpController;
 use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\ReportController;
 
 use Illuminate\Support\Facades\Route;
 
@@ -258,6 +259,24 @@ Route::middleware('jwt')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
+    | Reports / Complaints
+    |--------------------------------------------------------------------------
+    */
+
+    // Submit a new report
+    Route::post(
+        '/reports',
+        [ReportController::class, 'store']
+    );
+
+    // Get user's reports
+    Route::get(
+        '/reports',
+        [ReportController::class, 'index']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
     | Profile
     |--------------------------------------------------------------------------
     */
@@ -381,4 +400,5 @@ Route::middleware('jwt')->group(function () {
         ]);
     });
 });
+
 require __DIR__ . '/admin.php';
