@@ -2,7 +2,6 @@
 
 use App\Http\Controllers\Api\Admin\AdminAiHealthController;
 use App\Http\Controllers\Api\Admin\AdminDashboardController;
-use App\Http\Controllers\Api\Admin\AdminPropertyController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\Admin\AdminVibeReportController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
@@ -69,27 +68,6 @@ Route::middleware([
     Route::put(
         '/users/{id}/status',
         [AdminUserController::class, 'updateStatus']
-    )->whereNumber('id');
-
-    /*
-    |--------------------------------------------------------------------------
-    | Property Moderation
-    |--------------------------------------------------------------------------
-    */
-
-    Route::get(
-        '/properties',
-        [AdminPropertyController::class, 'index']
-    );
-
-    Route::put(
-        '/properties/{id}/approve',
-        [AdminPropertyController::class, 'approve']
-    )->whereNumber('id');
-
-    Route::put(
-        '/properties/{id}/reject',
-        [AdminPropertyController::class, 'reject']
     )->whereNumber('id');
 
     /*

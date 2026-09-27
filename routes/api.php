@@ -27,6 +27,8 @@ use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReportController;
 use App\Http\Controllers\Api\MyPropertyController;
+use App\Http\Controllers\Api\Agent\AgentPropertyController;
+use App\Http\Middleware\RequireRole;
 
 use Illuminate\Support\Facades\Route;
 
@@ -221,6 +223,10 @@ Route::post(
 */
 
 Route::middleware('jwt')->group(function () {
+    Route::post(
+    '/admin/notifications',
+    [NotificationController::class, 'adminStore']
+);
     Route::get(
     '/profile/saved-properties',
     [ProfileController::class, 'savedProperties']
@@ -555,6 +561,35 @@ Route::put(
         }
     );
 });
+
+/*
+|--------------------------------------------------------------------------
+| Agent Property Moderation
+|--------------------------------------------------------------------------
+*/
+
+Route::middleware([
+    'jwt',
+    RequireRole::class . ':agent',
+])->prefix('agent')->group(function () {
+
+    Route::get(
+        '/properties',
+        [AgentPropertyController::class, 'index']
+    );
+
+    Route::put(
+        '/properties/{id}/approve',
+        [AgentPropertyController::class, 'approve']
+    )->whereNumber('id');
+
+    Route::put(
+        '/properties/{id}/reject',
+        [AgentPropertyController::class, 'reject']
+    )->whereNumber('id');
+
+});
+
 
 /*
 |--------------------------------------------------------------------------
