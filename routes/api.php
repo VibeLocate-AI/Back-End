@@ -1,7 +1,7 @@
-<?php
-
+﻿<?php
+use App\Http\Controllers\Api\InquiryController;
 use App\Services\VibeAiService;
-
+use App\Http\Controllers\Api\SearchAlertController;
 use App\Http\Controllers\Api\FavoriteController;
 use App\Http\Controllers\Api\MapController;
 use App\Http\Controllers\Api\AIContextualSearchController;
@@ -26,6 +26,7 @@ use App\Http\Controllers\Api\VerifyResetOtpController;
 use App\Http\Controllers\Api\ReviewController;
 use App\Http\Controllers\Api\NotificationController;
 use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\MyPropertyController;
 
 use Illuminate\Support\Facades\Route;
 
@@ -50,7 +51,9 @@ Route::post('/auth/google', GoogleAuthController::class)
     ->middleware('vibe.rate:auth.google,10,15');
 
 Route::post('/logout', LogoutController::class);
+
 Route::post('/refresh-token', RefreshTokenController::class);
+
 Route::post('/remember-me', RememberMeController::class);
 
 /*
@@ -59,10 +62,26 @@ Route::post('/remember-me', RememberMeController::class);
 |--------------------------------------------------------------------------
 */
 
-Route::match(['get', 'post'], '/verify-email', VerifyEmailController::class);
-Route::post('/verify-otp', VerifyEmailController::class);
-Route::post('/resend-verification', ResendVerificationController::class);
-Route::post('/resend-otp', ResendVerificationController::class);
+Route::match(
+    ['get', 'post'],
+    '/verify-email',
+    VerifyEmailController::class
+);
+
+Route::post(
+    '/verify-otp',
+    VerifyEmailController::class
+);
+
+Route::post(
+    '/resend-verification',
+    ResendVerificationController::class
+);
+
+Route::post(
+    '/resend-otp',
+    ResendVerificationController::class
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -70,9 +89,20 @@ Route::post('/resend-otp', ResendVerificationController::class);
 |--------------------------------------------------------------------------
 */
 
-Route::post('/forgot-password', ForgotPasswordController::class);
-Route::post('/verify-reset-otp', VerifyResetOtpController::class);
-Route::post('/reset-password', ResetPasswordController::class);
+Route::post(
+    '/forgot-password',
+    ForgotPasswordController::class
+);
+
+Route::post(
+    '/verify-reset-otp',
+    VerifyResetOtpController::class
+);
+
+Route::post(
+    '/reset-password',
+    ResetPasswordController::class
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -80,7 +110,10 @@ Route::post('/reset-password', ResetPasswordController::class);
 |--------------------------------------------------------------------------
 */
 
-Route::get('/properties', [PropertyController::class, 'index']);
+Route::get(
+    '/properties',
+    [PropertyController::class, 'index']
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -88,7 +121,10 @@ Route::get('/properties', [PropertyController::class, 'index']);
 |--------------------------------------------------------------------------
 */
 
-Route::get('/map', [MapController::class, 'index']);
+Route::get(
+    '/map',
+    [MapController::class, 'index']
+);
 
 /*
 |--------------------------------------------------------------------------
@@ -97,52 +133,70 @@ Route::get('/map', [MapController::class, 'index']);
 */
 
 Route::prefix('home/{lang}')
-    ->where(['lang' => 'en|ar'])
+    ->where([
+        'lang' => 'en|ar'
+    ])
     ->group(function () {
 
-        // Featured Properties
+        /*
+        |--------------------------------------------------------------------------
+        | Featured Properties
+        |--------------------------------------------------------------------------
+        */
+
         Route::get(
             '/featured-properties',
             [HomeController::class, 'featuredProperties']
         );
 
-        // Featured Property Details
         Route::get(
             '/featured-properties/{id}',
             [HomeController::class, 'featuredPropertyDetails']
         )->whereNumber('id');
 
-        // Recommended Properties
+        /*
+        |--------------------------------------------------------------------------
+        | Recommended Properties
+        |--------------------------------------------------------------------------
+        */
+
         Route::get(
             '/recommended-properties',
             [HomeController::class, 'recommendedProperties']
         );
 
-        // Recommended Property Details
         Route::get(
             '/recommended-properties/{id}',
             [HomeController::class, 'recommendedPropertyDetails']
         )->whereNumber('id');
 
-        // Popular Areas
+        /*
+        |--------------------------------------------------------------------------
+        | Popular Areas
+        |--------------------------------------------------------------------------
+        */
+
         Route::get(
             '/popular-areas',
             [HomeController::class, 'popularAreas']
         );
 
-        // Popular Area Details
         Route::get(
             '/popular-areas/{id}',
             [HomeController::class, 'popularAreaDetails']
         )->whereNumber('id');
 
-        // Top Agents
+        /*
+        |--------------------------------------------------------------------------
+        | Top Agents
+        |--------------------------------------------------------------------------
+        */
+
         Route::get(
             '/top-agents',
             [HomeController::class, 'topAgents']
         );
 
-        // Top Agent Details
         Route::get(
             '/top-agents/{id}',
             [HomeController::class, 'topAgentDetails']
@@ -167,22 +221,123 @@ Route::post(
 */
 
 Route::middleware('jwt')->group(function () {
+    Route::get(
+    '/profile/saved-properties',
+    [ProfileController::class, 'savedProperties']
+);
+
+Route::get(
+    '/profile/recently-viewed',
+    [ProfileController::class, 'recentlyViewed']
+);
+
+Route::get(
+    '/profile/search-alerts',
+    [ProfileController::class, 'profileSearchAlerts']
+);
+
+Route::get(
+    '/profile/inquiries',
+    [ProfileController::class, 'profileInquiries']
+);
+    /*
+|--------------------------------------------------------------------------
+| Property Inquiries
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/inquiries',
+    [InquiryController::class, 'index']
+);
+
+Route::post(
+    '/properties/{propertyId}/inquiries',
+    [InquiryController::class, 'store']
+)->whereNumber('propertyId');
+    /*
+
+|--------------------------------------------------------------------------
+| Search Alerts
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/search-alerts',
+    [SearchAlertController::class, 'index']
+);
+
+Route::post(
+    '/search-alerts',
+    [SearchAlertController::class, 'store']
+);
+
+Route::put(
+    '/search-alerts/{id}',
+    [SearchAlertController::class, 'update']
+)->whereNumber('id');
+
+Route::delete(
+    '/search-alerts/{id}',
+    [SearchAlertController::class, 'destroy']
+)->whereNumber('id');
 
     /*
     |--------------------------------------------------------------------------
     | Property Reviews
     |--------------------------------------------------------------------------
     */
+Route::get(
+    '/properties/{propertyId}/review',
+    [ReviewController::class, 'show']
+)->whereNumber('propertyId');
 
-    Route::post(
-        '/properties/{propertyId}/review',
-        [ReviewController::class, 'store']
+Route::post(
+    '/properties/{propertyId}/review',
+    [ReviewController::class, 'store']
+)->whereNumber('propertyId');
+
+Route::put(
+    '/properties/{propertyId}/review',
+    [ReviewController::class, 'update']
+)->whereNumber('propertyId');
+
+Route::delete(
+    '/properties/{propertyId}/review',
+    [ReviewController::class, 'destroy']
+)->whereNumber('propertyId');
+
+    /*
+    |--------------------------------------------------------------------------
+    | My Properties
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/my-properties',
+        [MyPropertyController::class, 'index']
     );
+
+    Route::put(
+        '/my-properties/{id}',
+        [MyPropertyController::class, 'update']
+    )->whereNumber('id');
 
     Route::delete(
-        '/properties/{propertyId}/review',
-        [ReviewController::class, 'destroy']
-    );
+        '/my-properties/{id}',
+        [MyPropertyController::class, 'destroy']
+    )->whereNumber('id');
+
+    /*
+    |--------------------------------------------------------------------------
+    | Nearby Properties
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/properties/{id}/nearby',
+        [MyPropertyController::class, 'nearby']
+    )->whereNumber('id');
 
     /*
     |--------------------------------------------------------------------------
@@ -193,7 +348,7 @@ Route::middleware('jwt')->group(function () {
     Route::get(
         '/properties/{id}',
         [PropertyController::class, 'show']
-    );
+    )->whereNumber('id');
 
     Route::post(
         '/properties',
@@ -214,12 +369,12 @@ Route::middleware('jwt')->group(function () {
     Route::post(
         '/favorites/{propertyId}',
         [FavoriteController::class, 'store']
-    );
+    )->whereNumber('propertyId');
 
     Route::delete(
         '/favorites/{propertyId}',
         [FavoriteController::class, 'destroy']
-    );
+    )->whereNumber('propertyId');
 
     /*
     |--------------------------------------------------------------------------
@@ -227,31 +382,26 @@ Route::middleware('jwt')->group(function () {
     |--------------------------------------------------------------------------
     */
 
-    // Get all notifications
     Route::get(
         '/notifications',
         [NotificationController::class, 'index']
     );
 
-    // Get unread notifications count
     Route::get(
         '/notifications/unread-count',
         [NotificationController::class, 'unreadCount']
     );
 
-    // Mark all notifications as read
     Route::put(
         '/notifications/read-all',
         [NotificationController::class, 'markAllAsRead']
     );
 
-    // Mark one notification as read
     Route::put(
         '/notifications/{id}/read',
         [NotificationController::class, 'markAsRead']
     )->whereNumber('id');
 
-    // Delete notification
     Route::delete(
         '/notifications/{id}',
         [NotificationController::class, 'destroy']
@@ -263,13 +413,11 @@ Route::middleware('jwt')->group(function () {
     |--------------------------------------------------------------------------
     */
 
-    // Submit a new report
     Route::post(
         '/reports',
         [ReportController::class, 'store']
     );
 
-    // Get user's reports
     Route::get(
         '/reports',
         [ReportController::class, 'index']
@@ -280,17 +428,21 @@ Route::middleware('jwt')->group(function () {
     | Profile
     |--------------------------------------------------------------------------
     */
+Route::get(
+    '/profile',
+    [ProfileController::class, 'show']
+);
 
-    Route::get(
-        '/profile',
-        [ProfileController::class, 'show']
-    );
+Route::match(
+    ['put', 'patch'],
+    '/profile',
+    [ProfileController::class, 'update']
+);
 
-    Route::match(
-        ['put', 'patch'],
-        '/profile',
-        [ProfileController::class, 'update']
-    );
+Route::put(
+    '/profile/preferences',
+    [ProfileController::class, 'updatePreferences']
+);
 
     /*
     |--------------------------------------------------------------------------
@@ -380,25 +532,34 @@ Route::middleware('jwt')->group(function () {
     |--------------------------------------------------------------------------
     */
 
-    Route::get('/test-ai-connection', function (VibeAiService $aiService) {
+    Route::get(
+        '/test-ai-connection',
+        function (VibeAiService $aiService) {
 
-        $result = $aiService->parseSearchQuery(
-            'I want an office under 200000 AED in Dubai Marina',
-            'en'
-        );
+            $result = $aiService->parseSearchQuery(
+                'I want an office under 200000 AED in Dubai Marina',
+                'en'
+            );
 
-        if ($result === null) {
+            if ($result === null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Failed to connect to AI service',
+                ], 503);
+            }
+
             return response()->json([
-                'success' => false,
-                'message' => 'Failed to connect to AI service',
-            ], 503);
+                'success' => true,
+                'ai_response' => $result,
+            ]);
         }
-
-        return response()->json([
-            'success' => true,
-            'ai_response' => $result,
-        ]);
-    });
+    );
 });
+
+/*
+|--------------------------------------------------------------------------
+| Admin Routes
+|--------------------------------------------------------------------------
+*/
 
 require __DIR__ . '/admin.php';
