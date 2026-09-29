@@ -18,3 +18,5 @@ yarn-error.log
 /bootstrap/cache/*.php
 /storage/logs/*.log
 /.github//storage/app/public/
+/.github/
+/storage/app/
