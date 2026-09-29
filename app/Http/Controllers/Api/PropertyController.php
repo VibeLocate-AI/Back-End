@@ -2020,6 +2020,314 @@ class PropertyController extends Controller
                 'message' =>
                     'Failed to load property',
             ], 500);
+            
         }
     }
+    /**
+ * Get nearby points of interest for a property.
+ */
+public function nearby(Request $request, int $id): JsonResponse
+{
+    try {
+        $user = $request->attributes->get('auth_user');
+
+        if (!$user || empty($user['id'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthenticated',
+            ], 401);
+        }
+
+        $validator = validator($request->query(), [
+            'radius' => 'nullable|numeric|min:0.1|max:20',
+            'per_type' => 'nullable|integer|min:1|max:20',
+            'category' => 'nullable|string|max:100',
+            'subcategory' => 'nullable|string|max:100',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Invalid nearby filters',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $radiusKm = (float) $request->query('radius', 3);
+        $perType = (int) $request->query('per_type', 5);
+
+        $property = DB::table('properties')
+            ->where('id', $id)
+            ->whereNull('deleted_at')
+            ->select([
+                'id',
+                'owner_id',
+                'agency_id',
+                'moderation_status',
+                'title',
+            ])
+            ->first();
+
+        if (!$property) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Property not found',
+            ], 404);
+        }
+
+        if ($property->moderation_status !== 'approved') {
+            $currentUserId = (int) $user['id'];
+
+            $isOwner =
+                (int) $property->owner_id === $currentUserId;
+
+            $isAdmin = DB::table('roles as r')
+                ->join(
+                    'user_roles as ur',
+                    'ur.role_id',
+                    '=',
+                    'r.id'
+                )
+                ->where(
+                    'ur.user_id',
+                    $currentUserId
+                )
+                ->whereIn(
+                    'r.slug',
+                    [
+                        'admin',
+                        'super-admin',
+                    ]
+                )
+                ->exists();
+
+            $isAgencyAgent = false;
+
+            if ($property->agency_id !== null) {
+                $isAgencyAgent = DB::table('agency_agents')
+                    ->where(
+                        'user_id',
+                        $currentUserId
+                    )
+                    ->where(
+                        'agency_id',
+                        $property->agency_id
+                    )
+                    ->exists();
+            }
+
+            if (
+                !$isOwner &&
+                !$isAdmin &&
+                !$isAgencyAgent
+            ) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Property not found',
+                ], 404);
+            }
+        }
+
+        $location = DB::table('property_locations')
+            ->where('property_id', $id)
+            ->whereNotNull('latitude')
+            ->whereNotNull('longitude')
+            ->select([
+                'latitude',
+                'longitude',
+            ])
+            ->first();
+
+        if (!$location) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Property location is not available',
+            ], 404);
+        }
+
+        $latitude = (float) $location->latitude;
+        $longitude = (float) $location->longitude;
+
+        $distanceSql = '
+            6371 * ACOS(
+                LEAST(
+                    1,
+                    GREATEST(
+                        -1,
+                        COS(RADIANS(?))
+                        * COS(RADIANS(latitude))
+                        * COS(
+                            RADIANS(longitude)
+                            - RADIANS(?)
+                        )
+                        + SIN(RADIANS(?))
+                        * SIN(RADIANS(latitude))
+                    )
+                )
+            )
+        ';
+
+        $query = DB::table('points_of_interest')
+            ->select([
+                'id',
+                'osm_id',
+                'name',
+                'category',
+                'subcategory',
+                'latitude',
+                'longitude',
+                'icon',
+            ])
+            ->selectRaw(
+                $distanceSql . ' AS distance_km',
+                [
+                    $latitude,
+                    $longitude,
+                    $latitude,
+                ]
+            )
+
+            // Hide unnamed / empty POIs from users.
+            ->whereNotNull('name')
+            ->where('name', '<>', '')
+            ->whereRaw(
+                'LOWER(TRIM(name)) <> ?',
+                ['unnamed']
+            );
+
+        if ($request->filled('category')) {
+            $query->where(
+                'category',
+                $request->query('category')
+            );
+        }
+
+        if ($request->filled('subcategory')) {
+            $query->where(
+                'subcategory',
+                $request->query('subcategory')
+            );
+        }
+
+        $pois = $query
+            ->having(
+                'distance_km',
+                '<=',
+                $radiusKm
+            )
+            ->orderBy('distance_km')
+            ->get();
+
+        $formatted = $pois->map(
+            function ($poi) {
+                return [
+                    'id' =>
+                        (int) $poi->id,
+
+                    'osm_id' =>
+                        $poi->osm_id !== null
+                            ? (int) $poi->osm_id
+                            : null,
+
+                    'name' =>
+                        $poi->name,
+
+                    'category' =>
+                        $poi->category,
+
+                    'subcategory' =>
+                        $poi->subcategory,
+
+                    'icon' =>
+                        $poi->icon,
+
+                    'latitude' =>
+                        (float) $poi->latitude,
+
+                    'longitude' =>
+                        (float) $poi->longitude,
+
+                    'distance_km' =>
+                        round(
+                            (float) $poi->distance_km,
+                            3
+                        ),
+
+                    'distance_meters' =>
+                        (int) round(
+                            (float) $poi->distance_km
+                            * 1000
+                        ),
+                ];
+            }
+        );
+
+        $grouped = $formatted
+            ->groupBy('subcategory');
+
+        $summary = $grouped
+            ->map(function ($items) {
+                return [
+                    'available' =>
+                        $items->count(),
+                ];
+            });
+
+        $nearby = $grouped
+            ->map(function ($items) use ($perType) {
+                return $items
+                    ->take($perType)
+                    ->values();
+            });
+
+        return response()->json([
+            'success' => true,
+
+            'property' => [
+                'id' =>
+                    (int) $property->id,
+
+                'title' =>
+                    $property->title,
+
+                'latitude' =>
+                    $latitude,
+
+                'longitude' =>
+                    $longitude,
+            ],
+
+            'radius_km' =>
+                $radiusKm,
+
+            'per_type' =>
+                $perType,
+
+            'total_available' =>
+                $formatted->count(),
+
+            'summary' =>
+                $summary,
+
+            'nearby' =>
+                $nearby,
+        ]);
+
+    } catch (Throwable $e) {
+        Log::error(
+            'Failed to load nearby POIs',
+            [
+                'property_id' => $id,
+                'error' => $e->getMessage(),
+            ]
+        );
+
+        report($e);
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Failed to load nearby places',
+        ], 500);
+    }
+}
 }

@@ -1,4 +1,7 @@
 ﻿<?php
+use App\Http\Controllers\Api\Agent\AgentOnboardingController;
+use App\Http\Controllers\Api\Agent\AgentRegisterController;
+use App\Http\Controllers\Api\Agent\AgentPoiController;
 use App\Http\Controllers\Api\InquiryController;
 use App\Services\VibeAiService;
 use App\Http\Controllers\Api\SearchAlertController;
@@ -43,6 +46,10 @@ Route::post('/register', RegisterController::class);
 Route::post('/login', LoginController::class)
     ->middleware('vibe.rate:auth.login,5,15');
 
+Route::post(
+    '/agent/register',
+    [AgentRegisterController::class, 'store']
+);
 /*
 |--------------------------------------------------------------------------
 | Google Authentication
@@ -313,53 +320,55 @@ Route::delete(
     [ReviewController::class, 'destroy']
 )->whereNumber('propertyId');
 
-    /*
-    |--------------------------------------------------------------------------
-    | My Properties
-    |--------------------------------------------------------------------------
-    */
+   /*
+|--------------------------------------------------------------------------
+| My Properties
+|--------------------------------------------------------------------------
+*/
 
-    Route::get(
-        '/my-properties',
-        [MyPropertyController::class, 'index']
-    );
+Route::get(
+    '/my-properties',
+    [MyPropertyController::class, 'index']
+);
 
-    Route::put(
-        '/my-properties/{id}',
-        [MyPropertyController::class, 'update']
-    )->whereNumber('id');
+Route::put(
+    '/my-properties/{id}',
+    [MyPropertyController::class, 'update']
+)->whereNumber('id');
 
-    Route::delete(
-        '/my-properties/{id}',
-        [MyPropertyController::class, 'destroy']
-    )->whereNumber('id');
+Route::delete(
+    '/my-properties/{id}',
+    [MyPropertyController::class, 'destroy']
+)->whereNumber('id');
 
-    /*
-    |--------------------------------------------------------------------------
-    | Nearby Properties
-    |--------------------------------------------------------------------------
-    */
 
-    Route::get(
-        '/properties/{id}/nearby',
-        [MyPropertyController::class, 'nearby']
-    )->whereNumber('id');
+/*
+|--------------------------------------------------------------------------
+| Nearby Places
+|--------------------------------------------------------------------------
+*/
 
-    /*
-    |--------------------------------------------------------------------------
-    | Property Details / Create
-    |--------------------------------------------------------------------------
-    */
+Route::get(
+    '/properties/{id}/nearby',
+    [PropertyController::class, 'nearby']
+)->whereNumber('id');
 
-    Route::get(
-        '/properties/{id}',
-        [PropertyController::class, 'show']
-    )->whereNumber('id');
 
-    Route::post(
-        '/properties',
-        [PropertyController::class, 'store']
-    );
+/*
+|--------------------------------------------------------------------------
+| Property Details / Create
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/properties/{id}',
+    [PropertyController::class, 'show']
+)->whereNumber('id');
+
+Route::post(
+    '/properties',
+    [PropertyController::class, 'store']
+);
 
     /*
     |--------------------------------------------------------------------------
@@ -561,10 +570,9 @@ Route::put(
         }
     );
 });
-
 /*
 |--------------------------------------------------------------------------
-| Agent Property Moderation
+| Agent
 |--------------------------------------------------------------------------
 */
 
@@ -572,6 +580,36 @@ Route::middleware([
     'jwt',
     RequireRole::class . ':agent',
 ])->prefix('agent')->group(function () {
+/*
+|--------------------------------------------------------------------------
+| Agent Onboarding
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/onboarding/status',
+    [AgentOnboardingController::class, 'status']
+);
+
+Route::post(
+    '/onboarding/license',
+    [AgentOnboardingController::class, 'license']
+);
+
+Route::post(
+    '/onboarding/expertise',
+    [AgentOnboardingController::class, 'expertise']
+);
+
+Route::post(
+    '/onboarding/profile',
+    [AgentOnboardingController::class, 'profile']
+);
+    /*
+    |--------------------------------------------------------------------------
+    | Agent Property Moderation
+    |--------------------------------------------------------------------------
+    */
 
     Route::get(
         '/properties',
@@ -588,9 +626,32 @@ Route::middleware([
         [AgentPropertyController::class, 'reject']
     )->whereNumber('id');
 
+    /*
+    |--------------------------------------------------------------------------
+    | Agent POIs
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/pois',
+        [AgentPoiController::class, 'index']
+    );
+
+    Route::post(
+        '/pois',
+        [AgentPoiController::class, 'store']
+    );
+
+    Route::put(
+        '/pois/{id}',
+        [AgentPoiController::class, 'update']
+    )->whereNumber('id');
+
+    Route::delete(
+        '/pois/{id}',
+        [AgentPoiController::class, 'destroy']
+    )->whereNumber('id');
 });
-
-
 /*
 |--------------------------------------------------------------------------
 | Admin Routes

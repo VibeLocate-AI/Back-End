@@ -17,4 +17,4 @@ yarn-error.log
 /.vscode
 /bootstrap/cache/*.php
 /storage/logs/*.log
-/.github/
+/.github//storage/app/public/
