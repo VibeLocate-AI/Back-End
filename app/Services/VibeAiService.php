@@ -28,12 +28,14 @@ class VibeAiService
         $startedAt = microtime(true);
 
         try {
-            $response = Http::timeout(30)
-                ->acceptJson()
-                ->post($url, [
-                    'raw_text' => $rawText,
-                    'language' => $language,
-                ]);
+           $response = Http::connectTimeout(5)
+    ->timeout(120)
+    ->acceptJson()
+    ->asJson()
+    ->post($url, [
+        'raw_text' => $rawText,
+        'language' => $language,
+    ]);
 
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
 

@@ -18,13 +18,17 @@ class AdminDashboardController extends Controller
                 'data' => [
                     'statistics' => [
                         'total_users' => $this->countUsers(),
-                        'total_properties' => $this->safeCount('properties'),
+                        'total_properties' => $this->countProperties(),
                         'pending_properties' => $this->countPendingProperties(),
                         'open_reports' => $this->countOpenReports(),
                     ],
+
                     'ai_health' => $this->aiHealth(),
+
                     'vibe_report' => $this->vibeReportSummary(),
+
                     'pending_properties' => $this->pendingProperties(),
+
                     'recent_reports' => $this->recentReports(),
                 ],
             ]);
@@ -34,10 +38,18 @@ class AdminDashboardController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load admin dashboard',
-                'details' => app()->environment('local') ? $e->getMessage() : null,
+                'details' => app()->environment('local')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Users
+    |--------------------------------------------------------------------------
+    */
 
     private function countUsers(): int
     {
@@ -45,13 +57,26 @@ class AdminDashboardController extends Controller
             return 0;
         }
 
-        $query = DB::table('users');
+        return DB::table('users')
+            ->whereNull('deleted_at')
+            ->count();
+    }
 
-        if (Schema::hasColumn('users', 'deleted_at')) {
-            $query->whereNull('deleted_at');
+    /*
+    |--------------------------------------------------------------------------
+    | Properties
+    |--------------------------------------------------------------------------
+    */
+
+    private function countProperties(): int
+    {
+        if (!Schema::hasTable('properties')) {
+            return 0;
         }
 
-        return $query->count();
+        return DB::table('properties')
+            ->whereNull('deleted_at')
+            ->count();
     }
 
     private function countPendingProperties(): int
@@ -60,41 +85,67 @@ class AdminDashboardController extends Controller
             return 0;
         }
 
-        foreach (['moderation_status', 'approval_status', 'status'] as $column) {
-            if (!Schema::hasColumn('properties', $column)) {
-                continue;
-            }
+        return DB::table('properties')
+            ->whereNull('deleted_at')
+            ->where('moderation_status', 'pending')
+            ->count();
+    }
 
-            foreach (['pending', 'pending_review', 'under_review'] as $value) {
-                $count = DB::table('properties')
-                    ->where($column, $value)
-                    ->count();
-
-                if ($count > 0) {
-                    return $count;
-                }
-            }
+    private function pendingProperties(): array
+    {
+        if (!Schema::hasTable('properties')) {
+            return [];
         }
 
-        return 0;
+        return DB::table('properties')
+            ->whereNull('deleted_at')
+            ->where('moderation_status', 'pending')
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get()
+            ->map(fn ($row) => (array) $row)
+            ->all();
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Reports
+    |--------------------------------------------------------------------------
+    */
 
     private function countOpenReports(): int
     {
-        $table = $this->reportsTable();
-
-        if (!$table) {
+        if (!Schema::hasTable('reports')) {
             return 0;
         }
 
-        if (!Schema::hasColumn($table, 'status')) {
-            return DB::table($table)->count();
-        }
-
-        return DB::table($table)
-            ->whereIn('status', ['open', 'pending', 'under_review'])
+        return DB::table('reports')
+            ->whereIn('status', [
+                'pending',
+                'reviewing',
+            ])
             ->count();
     }
+
+    private function recentReports(): array
+    {
+        if (!Schema::hasTable('reports')) {
+            return [];
+        }
+
+        return DB::table('reports')
+            ->orderByDesc('id')
+            ->limit(5)
+            ->get()
+            ->map(fn ($row) => (array) $row)
+            ->all();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | AI Health
+    |--------------------------------------------------------------------------
+    */
 
     private function aiHealth(): array
     {
@@ -119,6 +170,7 @@ class AdminDashboardController extends Controller
         $total = (clone $query)->count();
 
         $success = 0;
+
         if (Schema::hasColumn('api_logs', 'response_code')) {
             $success = (clone $query)
                 ->whereBetween('response_code', [200, 299])
@@ -126,6 +178,7 @@ class AdminDashboardController extends Controller
         }
 
         $avgLatency = 0;
+
         if (Schema::hasColumn('api_logs', 'execution_time_ms')) {
             $avgLatency = round(
                 ((float) ((clone $query)->avg('execution_time_ms') ?? 0)) / 1000,
@@ -141,18 +194,27 @@ class AdminDashboardController extends Controller
             'status' => $total === 0
                 ? 'unknown'
                 : ($successRate >= 90 ? 'healthy' : 'degraded'),
+
             'total_requests' => $total,
+
             'success_rate' => $successRate,
+
             'avg_latency_seconds' => $avgLatency,
         ];
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Vibe Report
+    |--------------------------------------------------------------------------
+    */
 
     private function vibeReportSummary(): array
     {
         foreach ([
             'vibe_reports',
             'area_vibe_reports',
-            'vibe_report_coverage'
+            'vibe_report_coverage',
         ] as $table) {
 
             if (!Schema::hasTable($table)) {
@@ -170,57 +232,5 @@ class AdminDashboardController extends Controller
             'total' => 0,
         ];
     }
-
-    private function pendingProperties(): array
-    {
-        if (!Schema::hasTable('properties')) {
-            return [];
-        }
-
-        return DB::table('properties')
-            ->orderByDesc('id')
-            ->limit(5)
-            ->get()
-            ->map(fn ($row) => (array) $row)
-            ->all();
-    }
-
-    private function recentReports(): array
-    {
-        $table = $this->reportsTable();
-
-        if (!$table) {
-            return [];
-        }
-
-        return DB::table($table)
-            ->orderByDesc('id')
-            ->limit(5)
-            ->get()
-            ->map(fn ($row) => (array) $row)
-            ->all();
-    }
-
-    private function reportsTable(): ?string
-    {
-        foreach ([
-            'reports',
-            'complaints',
-            'complaints_reports',
-            'user_reports'
-        ] as $table) {
-            if (Schema::hasTable($table)) {
-                return $table;
-            }
-        }
-
-        return null;
-    }
-
-    private function safeCount(string $table): int
-    {
-        return Schema::hasTable($table)
-            ? DB::table($table)->count()
-            : 0;
-    }
+    
 }

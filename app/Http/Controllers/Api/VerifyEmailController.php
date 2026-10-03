@@ -10,68 +10,56 @@ use Throwable;
 
 class VerifyEmailController extends Controller
 {
-    public function __construct(private JwtService $jwt)
-    {
-    }
+    public function __construct(
+        private JwtService $jwt
+    ) {}
 
     public function __invoke(Request $request)
     {
-        /*
-        |--------------------------------------------------------------------------
-        | Read Verification Code
-        |--------------------------------------------------------------------------
-        |
-        | ندعم أكثر من اسم للحقل حتى يشتغل مع الفرونت الحالي:
-        | token
-        | otp
-        | code
-        |
-        */
-
-        if ($request->isMethod('get')) {
-            $verificationCode = trim((string) (
-                $request->query('token')
-                ?? $request->query('otp')
-                ?? $request->query('code')
-                ?? ''
-            ));
-        } else {
-            $verificationCode = trim((string) (
-                $request->input('token')
-                ?? $request->input('otp')
-                ?? $request->input('code')
-                ?? ''
-            ));
-        }
-
-        $email = strtolower(trim((string) $request->input('email', '')));
-
-        $deviceUuid = trim((string) $request->input(
-            'device_uuid',
-            ''
-        ));
-
-        $deviceType = (string) $request->input(
-            'device_type',
-            'web'
+        $email = strtolower(
+            trim(
+                (string) $request->input(
+                    'email',
+                    ''
+                )
+            )
         );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Validation
-        |--------------------------------------------------------------------------
-        */
+        $otp = trim(
+            (string) (
+                $request->input('otp')
+                ?? $request->input('code')
+                ?? ''
+            )
+        );
 
-        if ($verificationCode === '') {
+        $deviceUuid = trim(
+            (string) $request->input(
+                'device_uuid',
+                ''
+            )
+        );
+
+        $deviceType = trim(
+            (string) $request->input(
+                'device_type',
+                'web'
+            )
+        );
+
+        if (!filter_var(
+            $email,
+            FILTER_VALIDATE_EMAIL
+        )) {
             return $this->error(
-                'Verification code is required',
+                'Invalid email address',
                 422
             );
         }
 
         if (
-            strlen($verificationCode) !== 6 ||
-            !ctype_digit($verificationCode)
+            strlen($otp) !== 6 ||
+            !ctype_digit($otp)
         ) {
             return $this->error(
                 'Verification code must be 6 digits',
@@ -82,7 +70,12 @@ class VerifyEmailController extends Controller
         if (
             !in_array(
                 $deviceType,
-                ['ios', 'android', 'web', 'desktop'],
+                [
+                    'ios',
+                    'android',
+                    'web',
+                    'desktop',
+                ],
                 true
             )
         ) {
@@ -92,61 +85,14 @@ class VerifyEmailController extends Controller
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Find Verification
-        |--------------------------------------------------------------------------
-        */
-
-        $verificationQuery = DB::table('email_verifications')
-            ->where('token', $verificationCode)
-            ->where('expires_at', '>', now());
-
-        /*
-        | لو الفرونت بعت الإيميل، نربط الكود بنفس المستخدم
-        | حتى ما يتم استخدام كود مستخدم آخر بالخطأ.
-        */
-
-        if ($email !== '') {
-            $userForEmail = DB::table('users')
-                ->where('email', $email)
-                ->whereNull('deleted_at')
-                ->select('id')
-                ->first();
-
-            if (!$userForEmail) {
-                return $this->error(
-                    'User not found',
-                    404
-                );
-            }
-
-            $verificationQuery->where(
-                'user_id',
-                $userForEmail->id
-            );
-        }
-
-        $verification = $verificationQuery
-            ->select('user_id')
-            ->first();
-
-        if (!$verification) {
-            return $this->error(
-                'Invalid or expired verification code',
-                400
-            );
-        }
-
-        /*
-        |--------------------------------------------------------------------------
-        | Find User
-        |--------------------------------------------------------------------------
-        */
-
         $user = DB::table('users')
-            ->where('id', $verification->user_id)
-            ->whereNull('deleted_at')
+            ->where(
+                'email',
+                $email
+            )
+            ->whereNull(
+                'deleted_at'
+            )
             ->first();
 
         if (!$user) {
@@ -156,12 +102,6 @@ class VerifyEmailController extends Controller
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Already Verified
-        |--------------------------------------------------------------------------
-        */
-
         if (!empty($user->email_verified_at)) {
             return $this->error(
                 'Email is already verified',
@@ -169,143 +109,149 @@ class VerifyEmailController extends Controller
             );
         }
 
+        $otpHash = hash(
+            'sha256',
+            $otp
+        );
+
+        $verification = DB::table(
+            'email_verifications'
+        )
+            ->where(
+                'user_id',
+                $user->id
+            )
+            ->where(
+                'token',
+                $otpHash
+            )
+            ->where(
+                'expires_at',
+                '>',
+                now()
+            )
+            ->first();
+
+        if (!$verification) {
+            return $this->error(
+                'Invalid or expired verification code',
+                400
+            );
+        }
+
         DB::beginTransaction();
 
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Activate Account
-            |--------------------------------------------------------------------------
-            */
-
             DB::table('users')
-                ->where('id', $verification->user_id)
+                ->where(
+                    'id',
+                    $user->id
+                )
                 ->update([
-                    'email_verified_at' => now(),
-                    'status' => 'active',
-                ]);
+                    'email_verified_at' =>
+                        now(),
 
-            /*
-            |--------------------------------------------------------------------------
-            | Delete Used OTP
-            |--------------------------------------------------------------------------
-            */
+                    'status' =>
+                        'active',
+
+                    'updated_at' =>
+                        now(),
+                ]);
 
             DB::table('email_verifications')
                 ->where(
                     'user_id',
-                    $verification->user_id
+                    $user->id
                 )
                 ->delete();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Register Device
-            |--------------------------------------------------------------------------
-            */
-
-            $deviceId = null;
-
-            if ($deviceUuid !== '') {
-
-                $device = DB::table('devices')
-                    ->where('user_id', $user->id)
-                    ->where('device_uuid', $deviceUuid)
-                    ->first();
-
-                if ($device) {
-
-                    $deviceId = (int) $device->id;
-
-                    DB::table('devices')
-                        ->where('id', $deviceId)
-                        ->update([
-                            'device_type' => $deviceType,
-                            'updated_at' => now(),
-                        ]);
-
-                } else {
-
-                    $deviceId = DB::table('devices')
-                        ->insertGetId([
-                            'user_id' => $user->id,
-                            'device_uuid' => $deviceUuid,
-                            'device_type' => $deviceType,
-                        ]);
-                }
-            }
-
-            /*
-            |--------------------------------------------------------------------------
-            | Access Token
-            |--------------------------------------------------------------------------
-            */
-
-            $accessToken = $this->jwt->accessToken(
+            $deviceId = $this->resolveDevice(
                 (int) $user->id,
-                $user->email
+                $deviceUuid,
+                $deviceType
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Token
-            |--------------------------------------------------------------------------
-            */
+            $accessToken =
+                $this->jwt->accessToken(
+                    (int) $user->id,
+                    $user->email
+                );
 
-            $refreshToken = $this->jwt->refreshToken();
+            $refreshToken =
+                $this->jwt->refreshToken();
 
-            DB::table('refresh_tokens')->insert([
-                'user_id' => $user->id,
-                'device_id' => $deviceId,
-                'token_hash' => hash(
-                    'sha256',
-                    $refreshToken
-                ),
-                'expires_at' => now()->addDays(7),
-            ]);
+            DB::table('refresh_tokens')
+                ->insert([
+                    'user_id' =>
+                        $user->id,
 
-            /*
-            |--------------------------------------------------------------------------
-            | Login History
-            |--------------------------------------------------------------------------
-            */
+                    'device_id' =>
+                        $deviceId,
 
-            DB::table('login_history')->insert([
-                'user_id' => $user->id,
-                'device_id' => $deviceId,
-                'ip_address' =>
-                    $request->ip() ?: '127.0.0.1',
-                'login_status' => 'success',
-            ]);
+                    'token_hash' =>
+                        hash(
+                            'sha256',
+                            $refreshToken
+                        ),
+
+                    'expires_at' =>
+                        now()->addDays(
+                            (int) env(
+                                'JWT_REFRESH_DAYS',
+                                7
+                            )
+                        ),
+                ]);
+
+            DB::table('login_history')
+                ->insert([
+                    'user_id' =>
+                        $user->id,
+
+                    'device_id' =>
+                        $deviceId,
+
+                    'ip_address' =>
+                        $request->ip()
+                        ?: '127.0.0.1',
+
+                    'login_status' =>
+                        'success',
+                ]);
 
             DB::commit();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Success
-            |--------------------------------------------------------------------------
-            */
-
             return response()->json([
                 'success' => true,
+
                 'message' =>
                     'Email verified successfully',
 
-                'access_token' => $accessToken,
-                'refresh_token' => $refreshToken,
-                'token_type' => 'Bearer',
-                'expires_in' => 900,
+                'access_token' =>
+                    $accessToken,
+
+                'refresh_token' =>
+                    $refreshToken,
+
+                'token_type' =>
+                    'Bearer',
+
+                'expires_in' =>
+                    900,
 
                 'user' => [
-                    'id' => $user->id,
-                    'email' => $user->email,
-                ],
+                    'id' =>
+                        (int) $user->id,
 
-            ], 200, [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    'email' =>
+                        $user->email,
+
+                    'status' =>
+                        'active',
+                ],
+            ]);
 
         } catch (Throwable $e) {
-
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
             }
@@ -314,10 +260,66 @@ class VerifyEmailController extends Controller
 
             return response()->json([
                 'success' => false,
+
                 'message' =>
                     'Email verification failed',
+
+                'details' =>
+                    app()->environment('local')
+                        ? $e->getMessage()
+                        : null,
             ], 500);
         }
+    }
+
+    private function resolveDevice(
+        int $userId,
+        string $deviceUuid,
+        string $deviceType
+    ): ?int {
+        if ($deviceUuid === '') {
+            return null;
+        }
+
+        $device = DB::table('devices')
+            ->where(
+                'user_id',
+                $userId
+            )
+            ->where(
+                'device_uuid',
+                $deviceUuid
+            )
+            ->first();
+
+        if ($device) {
+            DB::table('devices')
+                ->where(
+                    'id',
+                    $device->id
+                )
+                ->update([
+                    'device_type' =>
+                        $deviceType,
+
+                    'updated_at' =>
+                        now(),
+                ]);
+
+            return (int) $device->id;
+        }
+
+        return DB::table('devices')
+            ->insertGetId([
+                'user_id' =>
+                    $userId,
+
+                'device_uuid' =>
+                    $deviceUuid,
+
+                'device_type' =>
+                    $deviceType,
+            ]);
     }
 
     private function error(

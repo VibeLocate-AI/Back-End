@@ -13,49 +13,51 @@ class ChangePasswordController extends Controller
 {
     public function __invoke(Request $request)
     {
-        $user = $request->attributes->get('auth_user');
+        $authUser = $request
+            ->attributes
+            ->get('auth_user');
 
-        if (!$user || empty($user['id'])) {
+        if (
+            !$authUser ||
+            empty($authUser['id'])
+        ) {
             return $this->error(
                 'Unauthenticated',
                 401
             );
         }
 
-        $userId = (int) $user['id'];
+        $userId = (int) $authUser['id'];
 
-        $currentPassword = (string) $request->input(
-            'current_password',
-            ''
+        $currentPassword =
+            (string) $request->input(
+                'current_password',
+                ''
+            );
+
+        $newPassword =
+            (string) $request->input(
+                'new_password',
+                ''
+            );
+
+        $confirmation =
+            (string) $request->input(
+                'new_password_confirmation',
+                ''
+            );
+
+        $otp = trim(
+            (string) (
+                $request->input('otp')
+                ?? $request->input('code')
+                ?? ''
+            )
         );
-
-        $newPassword = (string) $request->input(
-            'new_password',
-            ''
-        );
-
-        $otp = trim((string) (
-            $request->input('otp')
-            ?? $request->input('code')
-            ?? ''
-        ));
-
-        /*
-        |--------------------------------------------------------------------------
-        | Basic Validation
-        |--------------------------------------------------------------------------
-        */
 
         if ($currentPassword === '') {
             return $this->error(
                 'Current password is required',
-                422
-            );
-        }
-
-        if ($newPassword === '') {
-            return $this->error(
-                'New password is required',
                 422
             );
         }
@@ -67,6 +69,13 @@ class ChangePasswordController extends Controller
             );
         }
 
+        if ($newPassword !== $confirmation) {
+            return $this->error(
+                'Password confirmation does not match',
+                422
+            );
+        }
+
         if ($currentPassword === $newPassword) {
             return $this->error(
                 'New password must be different from current password',
@@ -74,41 +83,34 @@ class ChangePasswordController extends Controller
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Get Current User
-        |--------------------------------------------------------------------------
-        */
-
-        $currentUser = DB::table('users')
-            ->where('id', $userId)
-            ->whereNull('deleted_at')
-            ->select(
+        $user = DB::table('users')
+            ->where(
+                'id',
+                $userId
+            )
+            ->whereNull(
+                'deleted_at'
+            )
+            ->select([
                 'id',
                 'first_name',
                 'last_name',
                 'email',
-                'password_hash'
-            )
+                'password_hash',
+            ])
             ->first();
 
-        if (!$currentUser) {
+        if (!$user) {
             return $this->error(
                 'User not found',
                 404
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Verify Current Password
-        |--------------------------------------------------------------------------
-        */
-
         if (
             !Hash::check(
                 $currentPassword,
-                $currentUser->password_hash
+                $user->password_hash
             )
         ) {
             return $this->error(
@@ -119,21 +121,19 @@ class ChangePasswordController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | STEP 1
-        | No OTP supplied -> Send OTP
+        | Step 1 - Send OTP
         |--------------------------------------------------------------------------
         */
 
         if ($otp === '') {
             return $this->sendOtp(
-                $currentUser
+                $user
             );
         }
 
         /*
         |--------------------------------------------------------------------------
-        | STEP 2
-        | OTP supplied -> Verify and change password
+        | Step 2 - Verify OTP
         |--------------------------------------------------------------------------
         */
 
@@ -147,23 +147,35 @@ class ChangePasswordController extends Controller
             );
         }
 
-        $otpRecord = DB::table('password_change_otps')
-            ->where('user_id', $userId)
-            ->where('expires_at', '>', now())
+        $record = DB::table(
+            'password_change_otps'
+        )
+            ->where(
+                'user_id',
+                $userId
+            )
+            ->where(
+                'expires_at',
+                '>',
+                now()
+            )
             ->first();
 
-        if (!$otpRecord) {
+        if (!$record) {
             return $this->error(
                 'Verification code is invalid or expired',
                 400
             );
         }
 
-        $otpHash = hash('sha256', $otp);
+        $otpHash = hash(
+            'sha256',
+            $otp
+        );
 
         if (
             !hash_equals(
-                $otpRecord->otp_hash,
+                $record->otp_hash,
                 $otpHash
             )
         ) {
@@ -176,52 +188,48 @@ class ChangePasswordController extends Controller
         DB::beginTransaction();
 
         try {
-
-            /*
-            |--------------------------------------------------------------------------
-            | Change Password
-            |--------------------------------------------------------------------------
-            */
-
             DB::table('users')
-                ->where('id', $userId)
+                ->where(
+                    'id',
+                    $userId
+                )
                 ->update([
                     'password_hash' =>
-                        Hash::make($newPassword),
+                        Hash::make(
+                            $newPassword
+                        ),
+
+                    'updated_at' =>
+                        now(),
                 ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Remove Used OTP
-            |--------------------------------------------------------------------------
-            */
-
             DB::table('password_change_otps')
-                ->where('user_id', $userId)
+                ->where(
+                    'user_id',
+                    $userId
+                )
                 ->delete();
 
-            /*
-            |--------------------------------------------------------------------------
-            | Revoke Existing Refresh Tokens
-            |--------------------------------------------------------------------------
-            */
-
             DB::table('refresh_tokens')
-                ->where('user_id', $userId)
+                ->where(
+                    'user_id',
+                    $userId
+                )
                 ->update([
-                    'is_revoked' => 1,
+                    'is_revoked' =>
+                        1,
                 ]);
 
             DB::commit();
 
             return response()->json([
                 'success' => true,
+
                 'message' =>
                     'Password changed successfully. Please log in again.',
-            ], 200);
+            ]);
 
         } catch (Throwable $e) {
-
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
             }
@@ -235,16 +243,10 @@ class ChangePasswordController extends Controller
         }
     }
 
-    /*
-    |--------------------------------------------------------------------------
-    | Send Password Change OTP
-    |--------------------------------------------------------------------------
-    */
-
-    private function sendOtp(object $user)
-    {
+    private function sendOtp(
+        object $user
+    ) {
         try {
-
             $otp = (string) random_int(
                 100000,
                 999999
@@ -255,31 +257,30 @@ class ChangePasswordController extends Controller
                 $otp
             );
 
-            /*
-            |--------------------------------------------------------------------------
-            | Replace Old OTP
-            |--------------------------------------------------------------------------
-            */
-
             DB::table('password_change_otps')
-                ->where('user_id', $user->id)
+                ->where(
+                    'user_id',
+                    $user->id
+                )
                 ->delete();
 
             DB::table('password_change_otps')
                 ->insert([
-                    'user_id' => $user->id,
-                    'otp_hash' => $otpHash,
+                    'user_id' =>
+                        $user->id,
+
+                    'otp_hash' =>
+                        $otpHash,
+
                     'expires_at' =>
                         now()->addMinutes(10),
-                    'created_at' => now(),
-                    'updated_at' => now(),
-                ]);
 
-            /*
-            |--------------------------------------------------------------------------
-            | Brevo Configuration
-            |--------------------------------------------------------------------------
-            */
+                    'created_at' =>
+                        now(),
+
+                    'updated_at' =>
+                        now(),
+                ]);
 
             $apiKey = env(
                 'BREVO_API_KEY'
@@ -301,165 +302,70 @@ class ChangePasswordController extends Controller
             }
 
             $fullName = trim(
-                ($user->first_name ?? '') .
-                ' ' .
-                ($user->last_name ?? '')
+                ($user->first_name ?? '')
+                . ' '
+                . ($user->last_name ?? '')
             );
 
             if ($fullName === '') {
                 $fullName = 'User';
             }
 
-            /*
-            |--------------------------------------------------------------------------
-            | Email Design
-            |--------------------------------------------------------------------------
-            */
-
             $html = '
             <!DOCTYPE html>
             <html lang="en">
-
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport"
-                      content="width=device-width, initial-scale=1.0">
-
-                <title>
-                    Password Change Verification
-                </title>
-            </head>
-
             <body style="
-                margin:0;
-                padding:0;
+                font-family:Arial,sans-serif;
                 background:#f4f7fb;
-                font-family:Arial,Helvetica,sans-serif;
             ">
 
                 <div style="
                     max-width:600px;
                     margin:40px auto;
-                    background:#ffffff;
+                    padding:40px;
+                    background:#fff;
+                    text-align:center;
                     border-radius:16px;
-                    overflow:hidden;
-                    box-shadow:0 6px 24px rgba(0,0,0,0.08);
                 ">
 
-                    <div style="
-                        background:#17365f;
-                        padding:32px;
-                        text-align:center;
-                    ">
-
-                        <h1 style="
-                            margin:0;
-                            color:#ffffff;
-                            font-size:28px;
-                        ">
-                            VibeLocate AI
-                        </h1>
-
-                    </div>
-
-                    <div style="
-                        padding:40px 32px;
-                        text-align:center;
-                    ">
-
-                        <h2 style="
-                            color:#17365f;
-                            margin-bottom:20px;
-                        ">
-                            Confirm Password Change
-                        </h2>
-
-                        <p style="
-                            color:#555555;
-                            font-size:16px;
-                            line-height:1.6;
-                        ">
-                            Hello ' . e($fullName) . ',
-                        </p>
-
-                        <p style="
-                            color:#555555;
-                            font-size:16px;
-                            line-height:1.6;
-                        ">
-                            We received a request to change
-                            your VibeLocate AI password.
-                        </p>
-
-                        <p style="
-                            color:#555555;
-                            font-size:16px;
-                        ">
-                            Use this verification code:
-                        </p>
-
-                        <div style="
-                            display:inline-block;
-                            margin:24px 0;
-                            padding:18px 30px;
-                            background:#eef4ff;
-                            border-radius:12px;
-                            color:#17365f;
-                            font-size:36px;
-                            font-weight:bold;
-                            letter-spacing:8px;
-                        ">
-                            ' . e($otp) . '
-                        </div>
-
-                        <p style="
-                            color:#777777;
-                            font-size:14px;
-                        ">
-                            This code expires in
-                            10 minutes.
-                        </p>
-
-                        <p style="
-                            color:#777777;
-                            font-size:14px;
-                            line-height:1.6;
-                        ">
-                            If you did not request a
-                            password change, you can
-                            safely ignore this email.
-                        </p>
-
-                    </div>
-
-                    <div style="
-                        background:#f7f8fa;
-                        padding:20px;
-                        text-align:center;
-                        color:#999999;
-                        font-size:12px;
-                    ">
-                        © ' . date('Y') . '
+                    <h1>
                         VibeLocate AI
+                    </h1>
+
+                    <h2>
+                        Confirm Password Change
+                    </h2>
+
+                    <p>
+                        Hello ' . e($fullName) . '
+                    </p>
+
+                    <div style="
+                        font-size:36px;
+                        font-weight:bold;
+                        letter-spacing:8px;
+                        padding:24px;
+                    ">
+                        ' . e($otp) . '
                     </div>
+
+                    <p>
+                        This code expires in 10 minutes.
+                    </p>
 
                 </div>
-
             </body>
             </html>
             ';
 
-            /*
-            |--------------------------------------------------------------------------
-            | Send With Brevo API
-            |--------------------------------------------------------------------------
-            */
-
-            $brevoResponse = Http::timeout(20)
+            $response = Http::timeout(20)
                 ->withHeaders([
-                    'api-key' => $apiKey,
+                    'api-key' =>
+                        $apiKey,
+
                     'accept' =>
                         'application/json',
+
                     'content-type' =>
                         'application/json',
                 ])
@@ -469,6 +375,7 @@ class ChangePasswordController extends Controller
                         'sender' => [
                             'name' =>
                                 $senderName,
+
                             'email' =>
                                 $senderEmail,
                         ],
@@ -477,6 +384,7 @@ class ChangePasswordController extends Controller
                             [
                                 'email' =>
                                     $user->email,
+
                                 'name' =>
                                     $fullName,
                             ],
@@ -490,10 +398,7 @@ class ChangePasswordController extends Controller
                     ]
                 );
 
-            if (
-                !$brevoResponse->successful()
-            ) {
-
+            if (!$response->successful()) {
                 DB::table(
                     'password_change_otps'
                 )
@@ -510,21 +415,37 @@ class ChangePasswordController extends Controller
 
             return response()->json([
                 'success' => true,
+
                 'message' =>
                     'Verification code sent to your email.',
+
                 'verification_required' =>
                     true,
-                'otp_expires_in' => 600,
-            ], 200);
+
+                'otp_expires_in' =>
+                    600,
+            ]);
 
         } catch (Throwable $e) {
+            DB::table('password_change_otps')
+                ->where(
+                    'user_id',
+                    $user->id
+                )
+                ->delete();
 
             report($e);
 
             return response()->json([
                 'success' => false,
+
                 'message' =>
                     'Could not send verification code',
+
+                'details' =>
+                    app()->environment('local')
+                        ? $e->getMessage()
+                        : null,
             ], 500);
         }
     }

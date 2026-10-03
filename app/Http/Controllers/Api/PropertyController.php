@@ -791,30 +791,37 @@ class PropertyController extends Controller
             ], 500);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Get Active Agency
-        |--------------------------------------------------------------------------
-        */
+      /*
+|--------------------------------------------------------------------------
+| Get User Agency
+|--------------------------------------------------------------------------
+*/
 
-        $agencyId =
-            DB::table('agencies')
-                ->where(
-                    'status',
-                    'active'
-                )
-                ->orderBy('id')
-                ->value('id');
+$agencyId = DB::table('agency_agents as aa')
+    ->join(
+        'agencies as a',
+        'a.id',
+        '=',
+        'aa.agency_id'
+    )
+    ->where(
+        'aa.user_id',
+        $ownerId
+    )
+    ->where(
+        'a.status',
+        'active'
+    )
+    ->value(
+        'aa.agency_id'
+    );
 
-        if (!$agencyId) {
-            return response()->json([
-                'success' => false,
-
-                'message' =>
-                    'No active agency is available',
-            ], 500);
-        }
-
+if (!$agencyId) {
+    return response()->json([
+        'success' => false,
+        'message' => 'User is not assigned to an active agency',
+    ], 403);
+}
         /*
         |--------------------------------------------------------------------------
         | Cloudinary

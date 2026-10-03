@@ -5,27 +5,37 @@ use App\Http\Controllers\Api\Admin\AdminDashboardController;
 use App\Http\Controllers\Api\Admin\AdminUserController;
 use App\Http\Controllers\Api\Admin\AdminVibeReportController;
 use App\Http\Controllers\Api\Admin\AdminReportController;
+use App\Http\Controllers\Api\Admin\AdminAgencyController;
+use App\Http\Controllers\Api\NotificationController;
 
 use App\Http\Middleware\RequireRole;
 use Illuminate\Support\Facades\Route;
 
 Route::middleware([
-
     'jwt',
     RequireRole::class . ':admin',
-
 ])->prefix('admin')->group(function () {
 
     /*
     |--------------------------------------------------------------------------
-    | Vibe Report Coverage
+    | Agencies
     |--------------------------------------------------------------------------
     */
 
     Route::get(
-        '/vibe-report/coverage',
-        [AdminVibeReportController::class, 'coverage']
+        '/agencies',
+        [AdminAgencyController::class, 'index']
     );
+
+    Route::get(
+        '/agencies/{id}',
+        [AdminAgencyController::class, 'show']
+    )->whereNumber('id');
+
+    Route::put(
+        '/agencies/{id}/status',
+        [AdminAgencyController::class, 'updateStatus']
+    )->whereNumber('id');
 
     /*
     |--------------------------------------------------------------------------
@@ -36,17 +46,6 @@ Route::middleware([
     Route::get(
         '/dashboard',
         AdminDashboardController::class
-    );
-
-    /*
-    |--------------------------------------------------------------------------
-    | AI Health
-    |--------------------------------------------------------------------------
-    */
-
-    Route::get(
-        '/ai-health',
-        AdminAiHealthController::class
     );
 
     /*
@@ -72,6 +71,17 @@ Route::middleware([
 
     /*
     |--------------------------------------------------------------------------
+    | Update User Role
+    |--------------------------------------------------------------------------
+    */
+
+    Route::put(
+        '/users/{id}/role',
+        [AdminUserController::class, 'updateRole']
+    )->whereNumber('id');
+
+    /*
+    |--------------------------------------------------------------------------
     | Reports / Complaints
     |--------------------------------------------------------------------------
     */
@@ -91,4 +101,36 @@ Route::middleware([
         [AdminReportController::class, 'updateStatus']
     )->whereNumber('id');
 
+    /*
+    |--------------------------------------------------------------------------
+    | Notifications
+    |--------------------------------------------------------------------------
+    */
+
+    Route::post(
+        '/notifications',
+        [NotificationController::class, 'adminStore']
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | AI Health
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/ai-health',
+        AdminAiHealthController::class
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Vibe Report Coverage
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/vibe-report/coverage',
+        [AdminVibeReportController::class, 'coverage']
+    );
 });

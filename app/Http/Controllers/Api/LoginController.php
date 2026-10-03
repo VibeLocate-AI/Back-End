@@ -11,65 +11,19 @@ use Throwable;
 
 class LoginController extends Controller
 {
-    public function __construct(private JwtService $jwt) {}
+    public function __construct(
+        private JwtService $jwt
+    ) {}
 
-    /**
-     * Normal user login.
-     */
     public function __invoke(Request $request)
     {
-        return $this->login(
-            $request,
-            null,
-            'user'
-        );
-    }
-
-    /**
-     * Admin login.
-     */
-    public function adminLogin(Request $request)
-    {
         $email = strtolower(
-            trim((string) $request->input('email', ''))
-        );
-
-        if ($email !== 'admin@vibelocate.ai') {
-            return response()->json([
-                'success' => false,
-                'message' => 'This account is not allowed to access admin login',
-            ], 403);
-        }
-
-        return $this->login(
-            $request,
-            ['admin', 'super-admin'],
-            'admin'
-        );
-    }
-
-    /**
-     * Agent login.
-     */
-    public function agentLogin(Request $request)
-    {
-        return $this->login(
-            $request,
-            ['agent'],
-            'agent'
-        );
-    }
-
-    /**
-     * Shared login logic.
-     */
-    private function login(
-        Request $request,
-        ?array $requiredRoles = null,
-        string $loginType = 'user'
-    ) {
-        $email = strtolower(
-            trim((string) $request->input('email', ''))
+            trim(
+                (string) $request->input(
+                    'email',
+                    ''
+                )
+            )
         );
 
         $password = (string) $request->input(
@@ -78,16 +32,25 @@ class LoginController extends Controller
         );
 
         $deviceUuid = trim(
-            (string) $request->input('device_uuid', '')
+            (string) $request->input(
+                'device_uuid',
+                ''
+            )
         );
 
-        $deviceType = (string) $request->input(
-            'device_type',
-            'web'
+        $deviceType = trim(
+            (string) $request->input(
+                'device_type',
+                'web'
+            )
         );
 
-        $rememberMe = !empty(
-            $request->input('remember_me')
+        $rememberMe = filter_var(
+            $request->input(
+                'remember_me',
+                false
+            ),
+            FILTER_VALIDATE_BOOLEAN
         );
 
         /*
@@ -96,7 +59,10 @@ class LoginController extends Controller
         |--------------------------------------------------------------------------
         */
 
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        if (!filter_var(
+            $email,
+            FILTER_VALIDATE_EMAIL
+        )) {
             return $this->error(
                 'Invalid email address',
                 422
@@ -110,11 +76,18 @@ class LoginController extends Controller
             );
         }
 
-        if (!in_array(
-            $deviceType,
-            ['ios', 'android', 'web', 'desktop'],
-            true
-        )) {
+        if (
+            !in_array(
+                $deviceType,
+                [
+                    'ios',
+                    'android',
+                    'web',
+                    'desktop',
+                ],
+                true
+            )
+        ) {
             return $this->error(
                 'Invalid device type',
                 422
@@ -128,9 +101,20 @@ class LoginController extends Controller
         */
 
         $user = DB::table('users')
-            ->where('email', $email)
-            ->whereNull('deleted_at')
+            ->where(
+                'email',
+                $email
+            )
+            ->whereNull(
+                'deleted_at'
+            )
             ->first();
+
+        /*
+        |--------------------------------------------------------------------------
+        | Credentials
+        |--------------------------------------------------------------------------
+        */
 
         if (
             !$user ||
@@ -140,16 +124,29 @@ class LoginController extends Controller
             )
         ) {
             if ($user) {
-                DB::table('login_history')->insert([
-                    'user_id' => $user->id,
-                    'ip_address' =>
-                        $request->ip() ?: '127.0.0.1',
-                    'login_status' => 'failed',
-                ]);
+                try {
+                    DB::table('login_history')
+                        ->insert([
+                            'user_id' =>
+                                $user->id,
+
+                            'device_id' =>
+                                null,
+
+                            'ip_address' =>
+                                $request->ip()
+                                ?: '127.0.0.1',
+
+                            'login_status' =>
+                                'failed',
+                        ]);
+                } catch (Throwable) {
+                    //
+                }
             }
 
             $this->recordApiLog(
-                'auth.' . $loginType . '.login',
+                'auth.login',
                 401,
                 $request
             );
@@ -182,7 +179,7 @@ class LoginController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Load Roles
+        | Roles
         |--------------------------------------------------------------------------
         */
 
@@ -197,58 +194,45 @@ class LoginController extends Controller
                 'ur.user_id',
                 $user->id
             )
-            ->pluck('r.slug')
+            ->pluck(
+                'r.slug'
+            )
+            ->map(
+                fn ($role) =>
+                    (string) $role
+            )
             ->values()
             ->all();
 
-        /*
-        |--------------------------------------------------------------------------
-        | Required Role Check
-        |--------------------------------------------------------------------------
-        */
-
-        if ($requiredRoles !== null) {
-            $hasRequiredRole = count(
-                array_intersect(
-                    $roles,
-                    $requiredRoles
-                )
-            ) > 0;
-
-            if (!$hasRequiredRole) {
-                $this->recordApiLog(
-                    'auth.' . $loginType . '.login',
-                    403,
-                    $request
-                );
-
-                return response()->json([
-                    'success' => false,
-                    'message' => $loginType === 'admin'
-                        ? 'This account is not an admin account'
-                        : 'This account is not an agent account',
-                ], 403);
-            }
-        }
+        $primaryRole =
+            $this->getPrimaryRole(
+                $roles
+            );
 
         /*
         |--------------------------------------------------------------------------
-        | Login Transaction
+        | Session Transaction
         |--------------------------------------------------------------------------
         */
 
         DB::beginTransaction();
 
         try {
-            $deviceId = null;
-
             /*
             |--------------------------------------------------------------------------
             | Device
             |--------------------------------------------------------------------------
             */
 
+            $deviceId = null;
+
             if ($deviceUuid !== '') {
+                /*
+                 * Lock the device row during login.
+                 *
+                 * This helps prevent two simultaneous logins on the same
+                 * device from generating multiple active refresh tokens.
+                 */
                 $device = DB::table('devices')
                     ->where(
                         'user_id',
@@ -258,10 +242,12 @@ class LoginController extends Controller
                         'device_uuid',
                         $deviceUuid
                     )
+                    ->lockForUpdate()
                     ->first();
 
                 if ($device) {
-                    $deviceId = (int) $device->id;
+                    $deviceId =
+                        (int) $device->id;
 
                     DB::table('devices')
                         ->where(
@@ -269,18 +255,132 @@ class LoginController extends Controller
                             $deviceId
                         )
                         ->update([
-                            'device_type' => $deviceType,
-                            'updated_at' => now(),
+                            'device_type' =>
+                                $deviceType,
+
+                            'updated_at' =>
+                                now(),
                         ]);
+
                 } else {
-                    $deviceId = DB::table('devices')
-                        ->insertGetId([
-                            'user_id' => $user->id,
-                            'device_uuid' => $deviceUuid,
-                            'device_type' => $deviceType,
-                        ]);
+                    $deviceId =
+                        DB::table('devices')
+                            ->insertGetId([
+                                'user_id' =>
+                                    $user->id,
+
+                                'device_uuid' =>
+                                    $deviceUuid,
+
+                                'device_type' =>
+                                    $deviceType,
+                            ]);
                 }
             }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Revoke Previous Session Token
+            |--------------------------------------------------------------------------
+            |
+            | Final rule:
+            |
+            | One device = one active refresh token.
+            |
+            | Logging in again from the same device invalidates any previous
+            | refresh token belonging to that device.
+            |
+            */
+
+            if ($deviceId !== null) {
+                DB::table('refresh_tokens')
+                    ->where(
+                        'user_id',
+                        $user->id
+                    )
+                    ->where(
+                        'device_id',
+                        $deviceId
+                    )
+                    ->where(
+                        'is_revoked',
+                        0
+                    )
+                    ->update([
+                        'is_revoked' => 1,
+                    ]);
+            } else {
+                /*
+                 * Requests without device_uuid share one anonymous session.
+                 */
+                DB::table('refresh_tokens')
+                    ->where(
+                        'user_id',
+                        $user->id
+                    )
+                    ->whereNull(
+                        'device_id'
+                    )
+                    ->where(
+                        'is_revoked',
+                        0
+                    )
+                    ->update([
+                        'is_revoked' => 1,
+                    ]);
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | Access Token
+            |--------------------------------------------------------------------------
+            */
+
+            $accessToken =
+                $this->jwt->accessToken(
+                    (int) $user->id,
+                    $user->email
+                );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Refresh Token
+            |--------------------------------------------------------------------------
+            */
+
+            $refreshToken =
+                $this->jwt->refreshToken();
+
+            $refreshDays =
+                $rememberMe
+                    ? 30
+                    : 7;
+
+            $refreshExpiresAt =
+                now()->addDays(
+                    $refreshDays
+                );
+
+            DB::table('refresh_tokens')
+                ->insert([
+                    'user_id' =>
+                        $user->id,
+
+                    'device_id' =>
+                        $deviceId,
+
+                    'token_hash' =>
+                        hash(
+                            'sha256',
+                            $refreshToken
+                        ),
+
+                    'is_revoked' =>
+                        0,
+
+                    'expires_at' =>
+                        $refreshExpiresAt,
+                ]);
 
             /*
             |--------------------------------------------------------------------------
@@ -290,60 +390,21 @@ class LoginController extends Controller
 
             DB::table('login_history')
                 ->insert([
-                    'user_id' => $user->id,
-                    'device_id' => $deviceId,
+                    'user_id' =>
+                        $user->id,
+
+                    'device_id' =>
+                        $deviceId,
+
                     'ip_address' =>
-                        $request->ip() ?: '127.0.0.1',
-                    'login_status' => 'success',
-                ]);
+                        $request->ip()
+                        ?: '127.0.0.1',
 
-            /*
-            |--------------------------------------------------------------------------
-            | JWT
-            |--------------------------------------------------------------------------
-            */
-
-            $accessToken = $this->jwt->accessToken(
-                (int) $user->id,
-                $user->email
-            );
-
-            /*
-            |--------------------------------------------------------------------------
-            | Refresh Token
-            |--------------------------------------------------------------------------
-            */
-
-            $refreshToken = $this->jwt
-                ->refreshToken();
-
-            $days = $rememberMe
-                ? 30
-                : 7;
-
-            DB::table('refresh_tokens')
-                ->insert([
-                    'user_id' => $user->id,
-                    'device_id' => $deviceId,
-                    'token_hash' => hash(
-                        'sha256',
-                        $refreshToken
-                    ),
-                    'expires_at' =>
-                        now()->addDays($days),
+                    'login_status' =>
+                        'success',
                 ]);
 
             DB::commit();
-
-            /*
-            |--------------------------------------------------------------------------
-            | Determine Primary Role
-            |--------------------------------------------------------------------------
-            */
-
-            $primaryRole = $this->getPrimaryRole(
-                $roles
-            );
 
             /*
             |--------------------------------------------------------------------------
@@ -352,7 +413,7 @@ class LoginController extends Controller
             */
 
             $this->recordApiLog(
-                'auth.' . $loginType . '.login',
+                'auth.login',
                 200,
                 $request
             );
@@ -364,8 +425,11 @@ class LoginController extends Controller
             */
 
             return response()->json([
-                'success' => true,
-                'message' => 'Login successful',
+                'success' =>
+                    true,
+
+                'message' =>
+                    'Login successful',
 
                 'access_token' =>
                     $accessToken,
@@ -373,22 +437,53 @@ class LoginController extends Controller
                 'refresh_token' =>
                     $refreshToken,
 
-                'expires_in' => 900,
+                'token_type' =>
+                    'Bearer',
+
+                /*
+                 * Access JWT = 15 minutes.
+                 */
+                'expires_in' =>
+                    900,
+
+                /*
+                 * 7 days normally.
+                 * 30 days with Remember Me.
+                 */
+                'refresh_expires_in' =>
+                    $refreshDays
+                    * 24
+                    * 60
+                    * 60,
+
+                'refresh_expires_at' =>
+                    $refreshExpiresAt
+                        ->toDateTimeString(),
+
+                'remember_me' =>
+                    $rememberMe,
+
+                'device_id' =>
+                    $deviceId,
 
                 'user' => [
-                    'id' => (int) $user->id,
+                    'id' =>
+                        (int) $user->id,
 
                     'first_name' =>
-                        $user->first_name ?? null,
+                        $user->first_name
+                        ?? null,
 
                     'last_name' =>
-                        $user->last_name ?? null,
+                        $user->last_name
+                        ?? null,
 
                     'email' =>
                         $user->email,
 
                     'phone' =>
-                        $user->phone ?? null,
+                        $user->phone
+                        ?? null,
 
                     'status' =>
                         $user->status,
@@ -407,28 +502,38 @@ class LoginController extends Controller
             ]);
 
         } catch (Throwable $e) {
-            DB::rollBack();
+            if (
+                DB::transactionLevel() > 0
+            ) {
+                DB::rollBack();
+            }
 
             report($e);
 
             return response()->json([
-                'success' => false,
-                'message' => 'Login failed',
+                'success' =>
+                    false,
+
+                'message' =>
+                    'Login failed',
 
                 'details' =>
                     app()->environment('local')
                         ? $e->getMessage()
                         : null,
-
             ], 500);
         }
     }
 
-    /**
-     * Determine primary role.
-     */
-    private function getPrimaryRole(array $roles): string
-    {
+    /*
+    |--------------------------------------------------------------------------
+    | Primary Role
+    |--------------------------------------------------------------------------
+    */
+
+    private function getPrimaryRole(
+        array $roles
+    ): string {
         if (
             in_array(
                 'super-admin',
@@ -466,9 +571,12 @@ class LoginController extends Controller
         return 'user';
     }
 
-    /**
-     * Frontend redirect hint.
-     */
+    /*
+    |--------------------------------------------------------------------------
+    | Frontend Redirect
+    |--------------------------------------------------------------------------
+    */
+
     private function getRedirectPath(
         string $role
     ): string {
@@ -485,46 +593,61 @@ class LoginController extends Controller
         };
     }
 
-    /**
-     * Standard error response.
-     */
-    private function error(
-        string $message,
-        int $status
-    ) {
-        return response()->json([
-            'success' => false,
-            'message' => $message,
-        ], $status);
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | API Log
+    |--------------------------------------------------------------------------
+    */
 
-    /**
-     * API logging.
-     */
     private function recordApiLog(
         string $endpoint,
         int $code,
         Request $request
     ): void {
         try {
-            DB::table('api_logs')->insert([
-                'endpoint' =>
-                    $endpoint,
+            DB::table('api_logs')
+                ->insert([
+                    'endpoint' =>
+                        $endpoint,
 
-                'method' =>
-                    $request->method(),
+                    'method' =>
+                        $request->method(),
 
-                'response_code' =>
-                    $code,
+                    'response_code' =>
+                        $code,
 
-                'execution_time_ms' =>
-                    0,
+                    'execution_time_ms' =>
+                        0,
 
-                'ip_address' =>
-                    $request->ip() ?: '127.0.0.1',
-            ]);
+                    'ip_address' =>
+                        $request->ip()
+                        ?: '127.0.0.1',
+                ]);
+
         } catch (Throwable) {
-            // API logging should never prevent login.
+            /*
+             * Authentication should never fail
+             * because API logging failed.
+             */
         }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Standard Error
+    |--------------------------------------------------------------------------
+    */
+
+    private function error(
+        string $message,
+        int $status
+    ) {
+        return response()->json([
+            'success' =>
+                false,
+
+            'message' =>
+                $message,
+        ], $status);
     }
 }

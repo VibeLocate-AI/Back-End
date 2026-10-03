@@ -1,39 +1,67 @@
 ﻿<?php
-use App\Http\Controllers\Api\Agent\AgentOnboardingController;
-use App\Http\Controllers\Api\Agent\AgentRegisterController;
-use App\Http\Controllers\Api\Agent\AgentPoiController;
-use App\Http\Controllers\Api\InquiryController;
-use App\Services\VibeAiService;
-use App\Http\Controllers\Api\SearchAlertController;
-use App\Http\Controllers\Api\FavoriteController;
-use App\Http\Controllers\Api\MapController;
-use App\Http\Controllers\Api\AIContextualSearchController;
-use App\Http\Controllers\Api\ChangePasswordController;
-use App\Http\Controllers\Api\CompleteProfileController;
-use App\Http\Controllers\Api\ForgotPasswordController;
-use App\Http\Controllers\Api\GoogleAuthController;
-use App\Http\Controllers\Api\HomeController;
-use App\Http\Controllers\Api\LoginController;
-use App\Http\Controllers\Api\LogoutController;
-use App\Http\Controllers\Api\ProfileController;
-use App\Http\Controllers\Api\PropertyController;
-use App\Http\Controllers\Api\RefreshTokenController;
-use App\Http\Controllers\Api\RegisterController;
-use App\Http\Controllers\Api\RememberMeController;
-use App\Http\Controllers\Api\ResendVerificationController;
-use App\Http\Controllers\Api\ResetPasswordController;
-use App\Http\Controllers\Api\SessionsController;
-use App\Http\Controllers\Api\TwoFactorController;
-use App\Http\Controllers\Api\VerifyEmailController;
-use App\Http\Controllers\Api\VerifyResetOtpController;
-use App\Http\Controllers\Api\ReviewController;
-use App\Http\Controllers\Api\NotificationController;
-use App\Http\Controllers\Api\ReportController;
-use App\Http\Controllers\Api\MyPropertyController;
-use App\Http\Controllers\Api\Agent\AgentPropertyController;
-use App\Http\Middleware\RequireRole;
 
 use Illuminate\Support\Facades\Route;
+
+/*
+|--------------------------------------------------------------------------
+| Middleware
+|--------------------------------------------------------------------------
+*/
+
+use App\Http\Middleware\RequireRole;
+use App\Http\Middleware\EnsureActiveAgency;
+
+/*
+|--------------------------------------------------------------------------
+| Authentication Controllers
+|--------------------------------------------------------------------------
+*/
+
+use App\Http\Controllers\Api\RegisterController;
+use App\Http\Controllers\Api\LoginController;
+use App\Http\Controllers\Api\GoogleAuthController;
+use App\Http\Controllers\Api\LogoutController;
+use App\Http\Controllers\Api\RefreshTokenController;
+use App\Http\Controllers\Api\VerifyEmailController;
+use App\Http\Controllers\Api\ResendVerificationController;
+use App\Http\Controllers\Api\ForgotPasswordController;
+use App\Http\Controllers\Api\VerifyResetOtpController;
+use App\Http\Controllers\Api\ResetPasswordController;
+use App\Http\Controllers\Api\ChangePasswordController;
+use App\Http\Controllers\Api\SessionsController;
+use App\Http\Controllers\Api\TwoFactorController;
+
+/*
+|--------------------------------------------------------------------------
+| General API Controllers
+|--------------------------------------------------------------------------
+*/
+
+use App\Http\Controllers\Api\ProfileController;
+use App\Http\Controllers\Api\CompleteProfileController;
+use App\Http\Controllers\Api\PropertyController;
+use App\Http\Controllers\Api\MyPropertyController;
+use App\Http\Controllers\Api\ReviewController;
+use App\Http\Controllers\Api\FavoriteController;
+use App\Http\Controllers\Api\InquiryController;
+use App\Http\Controllers\Api\SearchAlertController;
+use App\Http\Controllers\Api\NotificationController;
+use App\Http\Controllers\Api\ReportController;
+use App\Http\Controllers\Api\MapController;
+use App\Http\Controllers\Api\HomeController;
+use App\Http\Controllers\Api\AIContextualSearchController;
+
+/*
+|--------------------------------------------------------------------------
+| Agent Controllers
+|--------------------------------------------------------------------------
+*/
+
+use App\Http\Controllers\Api\Agent\AgentRegisterController;
+use App\Http\Controllers\Api\Agent\AgentOnboardingController;
+use App\Http\Controllers\Api\Agent\AgentPropertyController;
+use App\Http\Controllers\Api\Agent\AgentPoiController;
+
 
 /*
 |--------------------------------------------------------------------------
@@ -41,81 +69,167 @@ use Illuminate\Support\Facades\Route;
 |--------------------------------------------------------------------------
 */
 
-Route::post('/register', RegisterController::class);
+/*
+ * Normal user registration.
+ */
+Route::post(
+    '/register',
+    RegisterController::class
+)->middleware(
+    'vibe.rate:auth.register,5,15'
+);
 
-Route::post('/login', LoginController::class)
-    ->middleware('vibe.rate:auth.login,5,15');
+/*
+ * Unified login:
+ *
+ * User
+ * Owner
+ * Agent
+ * Admin
+ * Super Admin
+ */
+Route::post(
+    '/login',
+    LoginController::class
+)->middleware(
+    'vibe.rate:auth.login,5,15'
+);
+
+/*
+|--------------------------------------------------------------------------
+| Agent Registration
+|--------------------------------------------------------------------------
+|
+| Agent account creation is public.
+| Email verification will be handled through /verify-otp.
+|
+*/
 
 Route::post(
     '/agent/register',
     [AgentRegisterController::class, 'store']
+)->middleware(
+    'vibe.rate:auth.agent.register,5,15'
 );
+
+
 /*
 |--------------------------------------------------------------------------
 | Google Authentication
 |--------------------------------------------------------------------------
 */
 
-Route::post('/auth/google', GoogleAuthController::class)
-    ->middleware('vibe.rate:auth.google,10,15');
+Route::post(
+    '/auth/google',
+    GoogleAuthController::class
+)->middleware(
+    'vibe.rate:auth.google,10,15'
+);
 
-Route::post('/logout', LogoutController::class);
-
-Route::post('/refresh-token', RefreshTokenController::class);
-
-Route::post('/remember-me', RememberMeController::class);
 
 /*
 |--------------------------------------------------------------------------
 | Email Verification
 |--------------------------------------------------------------------------
+|
+| Final endpoints:
+|
+| POST /api/verify-otp
+| POST /api/resend-otp
+|
+| Removed aliases:
+|
+| /verify-email
+| /resend-verification
+|
 */
-
-Route::match(
-    ['get', 'post'],
-    '/verify-email',
-    VerifyEmailController::class
-);
 
 Route::post(
     '/verify-otp',
     VerifyEmailController::class
-);
-
-Route::post(
-    '/resend-verification',
-    ResendVerificationController::class
+)->middleware(
+    'vibe.rate:auth.verify-email,10,15'
 );
 
 Route::post(
     '/resend-otp',
     ResendVerificationController::class
+)->middleware(
+    'vibe.rate:auth.resend-otp,3,15'
 );
+
+
+/*
+|--------------------------------------------------------------------------
+| Token Management
+|--------------------------------------------------------------------------
+|
+| These routes do not require a valid access JWT.
+|
+| A user may need to refresh/logout even when the access token
+| has already expired.
+|
+*/
+
+Route::post(
+    '/refresh-token',
+    RefreshTokenController::class
+)->middleware(
+    'vibe.rate:auth.refresh-token,30,15'
+);
+
+Route::post(
+    '/logout',
+    LogoutController::class
+)->middleware(
+    'vibe.rate:auth.logout,30,15'
+);
+
 
 /*
 |--------------------------------------------------------------------------
 | Password Recovery
 |--------------------------------------------------------------------------
+|
+| Flow:
+|
+| forgot-password
+|       ↓
+| Email OTP
+|       ↓
+| verify-reset-otp
+|       ↓
+| Secure reset token
+|       ↓
+| reset-password
+|
 */
 
 Route::post(
     '/forgot-password',
     ForgotPasswordController::class
+)->middleware(
+    'vibe.rate:auth.forgot-password,3,15'
 );
 
 Route::post(
     '/verify-reset-otp',
     VerifyResetOtpController::class
+)->middleware(
+    'vibe.rate:auth.verify-reset,10,15'
 );
 
 Route::post(
     '/reset-password',
     ResetPasswordController::class
+)->middleware(
+    'vibe.rate:auth.reset-password,5,15'
 );
+
 
 /*
 |--------------------------------------------------------------------------
-| Properties
+| Public Properties
 |--------------------------------------------------------------------------
 */
 
@@ -124,9 +238,10 @@ Route::get(
     [PropertyController::class, 'index']
 );
 
+
 /*
 |--------------------------------------------------------------------------
-| Map
+| Public Map
 |--------------------------------------------------------------------------
 */
 
@@ -135,15 +250,22 @@ Route::get(
     [MapController::class, 'index']
 );
 
+
 /*
 |--------------------------------------------------------------------------
-| Home - Separate English / Arabic Endpoints
+| Home
 |--------------------------------------------------------------------------
+|
+| Supported languages:
+|
+| en
+| ar
+|
 */
 
 Route::prefix('home/{lang}')
     ->where([
-        'lang' => 'en|ar'
+        'lang' => 'en|ar',
     ])
     ->group(function () {
 
@@ -163,6 +285,7 @@ Route::prefix('home/{lang}')
             [HomeController::class, 'featuredPropertyDetails']
         )->whereNumber('id');
 
+
         /*
         |--------------------------------------------------------------------------
         | Recommended Properties
@@ -179,6 +302,7 @@ Route::prefix('home/{lang}')
             [HomeController::class, 'recommendedPropertyDetails']
         )->whereNumber('id');
 
+
         /*
         |--------------------------------------------------------------------------
         | Popular Areas
@@ -194,6 +318,7 @@ Route::prefix('home/{lang}')
             '/popular-areas/{id}',
             [HomeController::class, 'popularAreaDetails']
         )->whereNumber('id');
+
 
         /*
         |--------------------------------------------------------------------------
@@ -212,6 +337,7 @@ Route::prefix('home/{lang}')
         )->whereNumber('id');
     });
 
+
 /*
 |--------------------------------------------------------------------------
 | AI Contextual Search
@@ -223,152 +349,168 @@ Route::post(
     [AIContextualSearchController::class, 'search']
 );
 
+
 /*
 |--------------------------------------------------------------------------
-| Protected Routes
+| Protected User Routes
 |--------------------------------------------------------------------------
+|
+| Everything inside this group requires:
+|
+| Authorization: Bearer <access_token>
+|
 */
 
 Route::middleware('jwt')->group(function () {
-    Route::post(
-    '/admin/notifications',
-    [NotificationController::class, 'adminStore']
-);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Profile Collections
+    |--------------------------------------------------------------------------
+    */
+
     Route::get(
-    '/profile/saved-properties',
-    [ProfileController::class, 'savedProperties']
-);
+        '/profile/saved-properties',
+        [ProfileController::class, 'savedProperties']
+    );
 
-Route::get(
-    '/profile/recently-viewed',
-    [ProfileController::class, 'recentlyViewed']
-);
+    Route::get(
+        '/profile/recently-viewed',
+        [ProfileController::class, 'recentlyViewed']
+    );
 
-Route::get(
-    '/profile/search-alerts',
-    [ProfileController::class, 'profileSearchAlerts']
-);
+    Route::get(
+        '/profile/search-alerts',
+        [ProfileController::class, 'profileSearchAlerts']
+    );
 
-Route::get(
-    '/profile/inquiries',
-    [ProfileController::class, 'profileInquiries']
-);
+    Route::get(
+        '/profile/inquiries',
+        [ProfileController::class, 'profileInquiries']
+    );
+
+
     /*
-|--------------------------------------------------------------------------
-| Property Inquiries
-|--------------------------------------------------------------------------
-*/
+    |--------------------------------------------------------------------------
+    | Property Inquiries
+    |--------------------------------------------------------------------------
+    */
 
-Route::get(
-    '/inquiries',
-    [InquiryController::class, 'index']
-);
+    Route::get(
+        '/inquiries',
+        [InquiryController::class, 'index']
+    );
 
-Route::post(
-    '/properties/{propertyId}/inquiries',
-    [InquiryController::class, 'store']
-)->whereNumber('propertyId');
+    Route::post(
+        '/properties/{propertyId}/inquiries',
+        [InquiryController::class, 'store']
+    )->whereNumber('propertyId');
+
+
     /*
+    |--------------------------------------------------------------------------
+    | Search Alerts
+    |--------------------------------------------------------------------------
+    */
 
-|--------------------------------------------------------------------------
-| Search Alerts
-|--------------------------------------------------------------------------
-*/
+    Route::get(
+        '/search-alerts',
+        [SearchAlertController::class, 'index']
+    );
 
-Route::get(
-    '/search-alerts',
-    [SearchAlertController::class, 'index']
-);
+    Route::post(
+        '/search-alerts',
+        [SearchAlertController::class, 'store']
+    );
 
-Route::post(
-    '/search-alerts',
-    [SearchAlertController::class, 'store']
-);
+    Route::put(
+        '/search-alerts/{id}',
+        [SearchAlertController::class, 'update']
+    )->whereNumber('id');
 
-Route::put(
-    '/search-alerts/{id}',
-    [SearchAlertController::class, 'update']
-)->whereNumber('id');
+    Route::delete(
+        '/search-alerts/{id}',
+        [SearchAlertController::class, 'destroy']
+    )->whereNumber('id');
 
-Route::delete(
-    '/search-alerts/{id}',
-    [SearchAlertController::class, 'destroy']
-)->whereNumber('id');
 
     /*
     |--------------------------------------------------------------------------
     | Property Reviews
     |--------------------------------------------------------------------------
     */
-Route::get(
-    '/properties/{propertyId}/review',
-    [ReviewController::class, 'show']
-)->whereNumber('propertyId');
 
-Route::post(
-    '/properties/{propertyId}/review',
-    [ReviewController::class, 'store']
-)->whereNumber('propertyId');
+    Route::get(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'show']
+    )->whereNumber('propertyId');
 
-Route::put(
-    '/properties/{propertyId}/review',
-    [ReviewController::class, 'update']
-)->whereNumber('propertyId');
+    Route::post(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'store']
+    )->whereNumber('propertyId');
 
-Route::delete(
-    '/properties/{propertyId}/review',
-    [ReviewController::class, 'destroy']
-)->whereNumber('propertyId');
+    Route::put(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'update']
+    )->whereNumber('propertyId');
 
-   /*
-|--------------------------------------------------------------------------
-| My Properties
-|--------------------------------------------------------------------------
-*/
-
-Route::get(
-    '/my-properties',
-    [MyPropertyController::class, 'index']
-);
-
-Route::put(
-    '/my-properties/{id}',
-    [MyPropertyController::class, 'update']
-)->whereNumber('id');
-
-Route::delete(
-    '/my-properties/{id}',
-    [MyPropertyController::class, 'destroy']
-)->whereNumber('id');
+    Route::delete(
+        '/properties/{propertyId}/review',
+        [ReviewController::class, 'destroy']
+    )->whereNumber('propertyId');
 
 
-/*
-|--------------------------------------------------------------------------
-| Nearby Places
-|--------------------------------------------------------------------------
-*/
+    /*
+    |--------------------------------------------------------------------------
+    | My Properties
+    |--------------------------------------------------------------------------
+    */
 
-Route::get(
-    '/properties/{id}/nearby',
-    [PropertyController::class, 'nearby']
-)->whereNumber('id');
+    Route::get(
+        '/my-properties',
+        [MyPropertyController::class, 'index']
+    );
+
+    Route::put(
+        '/my-properties/{id}',
+        [MyPropertyController::class, 'update']
+    )->whereNumber('id');
+
+    Route::delete(
+        '/my-properties/{id}',
+        [MyPropertyController::class, 'destroy']
+    )->whereNumber('id');
 
 
-/*
-|--------------------------------------------------------------------------
-| Property Details / Create
-|--------------------------------------------------------------------------
-*/
+    /*
+    |--------------------------------------------------------------------------
+    | Nearby Places
+    |--------------------------------------------------------------------------
+    */
 
-Route::get(
-    '/properties/{id}',
-    [PropertyController::class, 'show']
-)->whereNumber('id');
+    Route::get(
+        '/properties/{id}/nearby',
+        [PropertyController::class, 'nearby']
+    )->whereNumber('id');
 
-Route::post(
-    '/properties',
-    [PropertyController::class, 'store']
-);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Property Details / Create
+    |--------------------------------------------------------------------------
+    */
+
+    Route::get(
+        '/properties/{id}',
+        [PropertyController::class, 'show']
+    )->whereNumber('id');
+
+    Route::post(
+        '/properties',
+        [PropertyController::class, 'store']
+    );
+
 
     /*
     |--------------------------------------------------------------------------
@@ -390,6 +532,7 @@ Route::post(
         '/favorites/{propertyId}',
         [FavoriteController::class, 'destroy']
     )->whereNumber('propertyId');
+
 
     /*
     |--------------------------------------------------------------------------
@@ -422,6 +565,7 @@ Route::post(
         [NotificationController::class, 'destroy']
     )->whereNumber('id');
 
+
     /*
     |--------------------------------------------------------------------------
     | Reports / Complaints
@@ -438,26 +582,29 @@ Route::post(
         [ReportController::class, 'index']
     );
 
+
     /*
     |--------------------------------------------------------------------------
     | Profile
     |--------------------------------------------------------------------------
     */
-Route::get(
-    '/profile',
-    [ProfileController::class, 'show']
-);
 
-Route::match(
-    ['put', 'patch'],
-    '/profile',
-    [ProfileController::class, 'update']
-);
+    Route::get(
+        '/profile',
+        [ProfileController::class, 'show']
+    );
 
-Route::put(
-    '/profile/preferences',
-    [ProfileController::class, 'updatePreferences']
-);
+    Route::match(
+        ['put', 'patch'],
+        '/profile',
+        [ProfileController::class, 'update']
+    );
+
+    Route::put(
+        '/profile/preferences',
+        [ProfileController::class, 'updatePreferences']
+    );
+
 
     /*
     |--------------------------------------------------------------------------
@@ -470,6 +617,7 @@ Route::put(
         [ProfileController::class, 'updateLocation']
     );
 
+
     /*
     |--------------------------------------------------------------------------
     | Profile Avatar
@@ -480,6 +628,7 @@ Route::put(
         '/profile/avatar',
         [ProfileController::class, 'updateAvatar']
     );
+
 
     /*
     |--------------------------------------------------------------------------
@@ -493,16 +642,20 @@ Route::put(
         CompleteProfileController::class
     );
 
+
     /*
     |--------------------------------------------------------------------------
-    | Password
+    | Change Password
     |--------------------------------------------------------------------------
     */
 
     Route::post(
         '/change-password',
         ChangePasswordController::class
+    )->middleware(
+        'vibe.rate:auth.change-password,5,15'
     );
+
 
     /*
     |--------------------------------------------------------------------------
@@ -519,6 +672,7 @@ Route::put(
         '/sessions',
         [SessionsController::class, 'destroy']
     );
+
 
     /*
     |--------------------------------------------------------------------------
@@ -540,122 +694,138 @@ Route::put(
         '/two-factor',
         [TwoFactorController::class, 'destroy']
     );
-
-    /*
-    |--------------------------------------------------------------------------
-    | Temporary AI Connection Test
-    |--------------------------------------------------------------------------
-    */
-
-    Route::get(
-        '/test-ai-connection',
-        function (VibeAiService $aiService) {
-
-            $result = $aiService->parseSearchQuery(
-                'I want an office under 200000 AED in Dubai Marina',
-                'en'
-            );
-
-            if ($result === null) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to connect to AI service',
-                ], 503);
-            }
-
-            return response()->json([
-                'success' => true,
-                'ai_response' => $result,
-            ]);
-        }
-    );
 });
+
+
 /*
 |--------------------------------------------------------------------------
-| Agent
+| Agent Routes
 |--------------------------------------------------------------------------
+|
+| Agent must:
+|
+| 1. Have authenticated JWT
+| 2. Have role = agent
+|
 */
 
 Route::middleware([
     'jwt',
     RequireRole::class . ':agent',
-])->prefix('agent')->group(function () {
-/*
-|--------------------------------------------------------------------------
-| Agent Onboarding
-|--------------------------------------------------------------------------
-*/
+])
+    ->prefix('agent')
+    ->group(function () {
 
-Route::get(
-    '/onboarding/status',
-    [AgentOnboardingController::class, 'status']
-);
+        /*
+        |--------------------------------------------------------------------------
+        | Agent Onboarding
+        |--------------------------------------------------------------------------
+        |
+        | Pending agencies ARE allowed here.
+        |
+        | This allows the Agent to complete:
+        |
+        | - License
+        | - Expertise
+        | - Profile
+        |
+        */
 
-Route::post(
-    '/onboarding/license',
-    [AgentOnboardingController::class, 'license']
-);
+        Route::get(
+            '/onboarding/status',
+            [AgentOnboardingController::class, 'status']
+        );
 
-Route::post(
-    '/onboarding/expertise',
-    [AgentOnboardingController::class, 'expertise']
-);
+        Route::post(
+            '/onboarding/license',
+            [AgentOnboardingController::class, 'license']
+        );
 
-Route::post(
-    '/onboarding/profile',
-    [AgentOnboardingController::class, 'profile']
-);
-    /*
-    |--------------------------------------------------------------------------
-    | Agent Property Moderation
-    |--------------------------------------------------------------------------
-    */
+        Route::post(
+            '/onboarding/expertise',
+            [AgentOnboardingController::class, 'expertise']
+        );
 
-    Route::get(
-        '/properties',
-        [AgentPropertyController::class, 'index']
-    );
+        Route::post(
+            '/onboarding/profile',
+            [AgentOnboardingController::class, 'profile']
+        );
 
-    Route::put(
-        '/properties/{id}/approve',
-        [AgentPropertyController::class, 'approve']
-    )->whereNumber('id');
 
-    Route::put(
-        '/properties/{id}/reject',
-        [AgentPropertyController::class, 'reject']
-    )->whereNumber('id');
+        /*
+        |--------------------------------------------------------------------------
+        | Active Agency Only
+        |--------------------------------------------------------------------------
+        |
+        | Property moderation and POI management require
+        | an ACTIVE agency.
+        |
+        */
 
-    /*
-    |--------------------------------------------------------------------------
-    | Agent POIs
-    |--------------------------------------------------------------------------
-    */
+        Route::middleware(
+            EnsureActiveAgency::class
+        )->group(function () {
 
-    Route::get(
-        '/pois',
-        [AgentPoiController::class, 'index']
-    );
+            /*
+            |--------------------------------------------------------------------------
+            | Agent Property Moderation
+            |--------------------------------------------------------------------------
+            */
 
-    Route::post(
-        '/pois',
-        [AgentPoiController::class, 'store']
-    );
+            Route::get(
+                '/properties',
+                [AgentPropertyController::class, 'index']
+            );
 
-    Route::put(
-        '/pois/{id}',
-        [AgentPoiController::class, 'update']
-    )->whereNumber('id');
+            Route::put(
+                '/properties/{id}/approve',
+                [AgentPropertyController::class, 'approve']
+            )->whereNumber('id');
 
-    Route::delete(
-        '/pois/{id}',
-        [AgentPoiController::class, 'destroy']
-    )->whereNumber('id');
-});
+            Route::put(
+                '/properties/{id}/reject',
+                [AgentPropertyController::class, 'reject']
+            )->whereNumber('id');
+
+
+            /*
+            |--------------------------------------------------------------------------
+            | Agent POIs
+            |--------------------------------------------------------------------------
+            */
+
+            Route::get(
+                '/pois',
+                [AgentPoiController::class, 'index']
+            );
+
+            Route::post(
+                '/pois',
+                [AgentPoiController::class, 'store']
+            );
+
+            Route::put(
+                '/pois/{id}',
+                [AgentPoiController::class, 'update']
+            )->whereNumber('id');
+
+            Route::delete(
+                '/pois/{id}',
+                [AgentPoiController::class, 'destroy']
+            )->whereNumber('id');
+        });
+    });
+
+
 /*
 |--------------------------------------------------------------------------
 | Admin Routes
 |--------------------------------------------------------------------------
+|
+| Admin-specific routes live in:
+|
+| routes/admin.php
+|
 */
 
 require __DIR__ . '/admin.php';
