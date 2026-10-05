@@ -33,7 +33,7 @@ class VibeAiService
     ->acceptJson()
     ->asJson()
     ->post($url, [
-        'raw_text' => $rawText,
+        'raw_text' => $query,
         'language' => $language,
     ]);
 
