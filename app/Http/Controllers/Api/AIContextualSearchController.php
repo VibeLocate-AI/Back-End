@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\VibeAiService;
+use App\Services\ContextualSearchParser;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -13,10 +14,10 @@ class AIContextualSearchController extends Controller
 {
     private const POI_RADIUS_KM = 1.0;
     private const RESULT_LIMIT = 50;
-
-    public function __construct(
-        private VibeAiService $aiService
-    ) {}
+public function __construct(
+    private VibeAiService $aiService,
+    private ContextualSearchParser $localParser
+) {}
 
     public function search(Request $request): JsonResponse
     {
@@ -53,26 +54,297 @@ class AIContextualSearchController extends Controller
                         $searchText
                     );
 
-            $aiResponse =
-                $this
-                    ->aiService
-                    ->parseSearchQuery(
-                        $searchText,
-                        $language
-                    );
+          /*
+|--------------------------------------------------------------------------
+| Parse query locally in Laravel
+|--------------------------------------------------------------------------
+|
+| Laravel is capable of understanding the explicit real-estate constraints
+| itself. The external AI parser remains optional and can enrich the result,
+| but a failure or empty AI response must never cause all properties to be
+| returned.
+|
+*/
 
-            if (!$aiResponse) {
-                return response()->json([
-                    'success' =>
-                        false,
+$localResponse =
+    $this
+        ->localParser
+        ->parse(
+            $searchText,
+            $language
+        );
 
-                    'message' =>
-                        $language === 'ar'
-                            ? 'تعذر تحليل طلب البحث حاليًا'
-                            : 'Could not understand the search request',
+/*
+|--------------------------------------------------------------------------
+| Optional AI enrichment
+|--------------------------------------------------------------------------
+*/
 
-                ], 503);
-            }
+$remoteResponse = null;
+
+try {
+    $remoteResponse =
+        $this
+            ->aiService
+            ->parseSearchQuery(
+                $searchText,
+                $language
+            );
+} catch (Throwable $e) {
+    /*
+     * The contextual search must continue using the Laravel parser.
+     */
+    $remoteResponse = null;
+}
+
+/*
+|--------------------------------------------------------------------------
+| Start with Laravel understanding
+|--------------------------------------------------------------------------
+*/
+
+$aiResponse =
+    $localResponse;
+
+/*
+|--------------------------------------------------------------------------
+| Merge valid AI values
+|--------------------------------------------------------------------------
+|
+| AI is allowed to add information Laravel did not recognize.
+| It is NOT allowed to erase valid Laravel values by returning null.
+|
+*/
+
+if (is_array($remoteResponse)) {
+
+    $mergeKeys = [
+        'property_type',
+        'min_budget',
+        'max_budget',
+        'budget_currency',
+        'min_bedrooms',
+        'max_bedrooms',
+        'furnishing_status',
+        'location_hint',
+        'action_type',
+        'listing_type',
+        'purpose',
+    ];
+
+    foreach ($mergeKeys as $key) {
+
+        if (
+            (
+                !array_key_exists(
+                    $key,
+                    $aiResponse
+                )
+                ||
+                $aiResponse[$key] === null
+                ||
+                $aiResponse[$key] === ''
+            )
+            &&
+            array_key_exists(
+                $key,
+                $remoteResponse
+            )
+            &&
+            $remoteResponse[$key] !== null
+            &&
+            $remoteResponse[$key] !== ''
+        ) {
+            $aiResponse[$key] =
+                $remoteResponse[$key];
+        }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Merge vibe tags
+    |--------------------------------------------------------------------------
+    */
+
+    $localVibes =
+        is_array(
+            $aiResponse['vibe_tags']
+            ?? null
+        )
+            ? $aiResponse['vibe_tags']
+            : [];
+
+    $remoteVibes =
+        is_array(
+            $remoteResponse['vibe_tags']
+            ?? null
+        )
+            ? $remoteResponse['vibe_tags']
+            : [];
+
+    $aiResponse['vibe_tags'] =
+        array_values(
+            array_unique(
+                array_merge(
+                    $localVibes,
+                    $remoteVibes
+                )
+            )
+        );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Merge amenities
+    |--------------------------------------------------------------------------
+    */
+
+    $localAmenities =
+        is_array(
+            $aiResponse['required_amenities']
+            ?? null
+        )
+            ? $aiResponse['required_amenities']
+            : [];
+
+    $remoteAmenities =
+        is_array(
+            $remoteResponse['required_amenities']
+            ?? null
+        )
+            ? $remoteResponse['required_amenities']
+            : [];
+
+    $aiResponse['required_amenities'] =
+        array_values(
+            array_merge(
+                $localAmenities,
+                $remoteAmenities
+            )
+        );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Confidence
+    |--------------------------------------------------------------------------
+    */
+
+    $localConfidence =
+        (float) (
+            $aiResponse['confidence']
+            ?? 0
+        );
+
+    $remoteConfidence =
+        (float) (
+            $remoteResponse['confidence']
+            ?? 0
+        );
+
+    $aiResponse['confidence'] =
+        max(
+            $localConfidence,
+            $remoteConfidence
+        );
+/*
+|--------------------------------------------------------------------------
+| Clarification
+|--------------------------------------------------------------------------
+|
+| Laravel local parser is authoritative for explicit criteria.
+| Do not allow the remote AI to mark a clearly understood query
+| as ambiguous just because it returned needs_clarification = true.
+*/
+
+$localNeedsClarification =
+    (bool) (
+        $localResponse[
+            'needs_clarification'
+        ]
+        ?? false
+    );
+
+$hasUsefulCriteria =
+    !empty(
+        $aiResponse[
+            'property_type'
+        ]
+    )
+    ||
+    (
+        $aiResponse[
+            'min_budget'
+        ]
+        ?? null
+    ) !== null
+    ||
+    (
+        $aiResponse[
+            'max_budget'
+        ]
+        ?? null
+    ) !== null
+    ||
+    (
+        $aiResponse[
+            'min_bedrooms'
+        ]
+        ?? null
+    ) !== null
+    ||
+    (
+        $aiResponse[
+            'max_bedrooms'
+        ]
+        ?? null
+    ) !== null
+    ||
+    !empty(
+        $aiResponse[
+            'location_hint'
+        ]
+    )
+    ||
+    !empty(
+        $aiResponse[
+            'action_type'
+        ]
+    )
+    ||
+    !empty(
+        $aiResponse[
+            'listing_type'
+        ]
+    )
+    ||
+    !empty(
+        $aiResponse[
+            'purpose'
+        ]
+    )
+    ||
+    !empty(
+        $aiResponse[
+            'required_amenities'
+        ]
+    )
+    ||
+!empty(
+    $aiResponse[
+        'vibe_tags'
+    ]
+)
+||
+!empty(
+    $aiResponse[
+        'furnishing_status'
+    ]
+);
+
+$aiResponse['needs_clarification'] =
+    $localNeedsClarification
+    ||
+    !$hasUsefulCriteria;
+}
 
             $propertyType =
                 $aiResponse[
@@ -108,7 +380,32 @@ class AIContextualSearchController extends Controller
                 $aiResponse[
                     'location_hint'
                 ] ?? null;
+$furnishingStatus =
+    $aiResponse[
+        'furnishing_status'
+    ] ?? null;
 
+if ($furnishingStatus !== null) {
+    $furnishingStatus =
+        mb_strtolower(
+            trim(
+                (string) $furnishingStatus
+            )
+        );
+
+    if (
+        !in_array(
+            $furnishingStatus,
+            [
+                'furnished',
+                'unfurnished',
+            ],
+            true
+        )
+    ) {
+        $furnishingStatus = null;
+    }
+}
             $actionType =
                 $aiResponse[
                     'action_type'
@@ -182,7 +479,122 @@ class AIContextualSearchController extends Controller
                     ->normalizeActionType(
                         $actionType
                     );
+/*
+|--------------------------------------------------------------------------
+| Prevent unfiltered contextual search
+|--------------------------------------------------------------------------
+|
+| Previously, when the parser returned null for every field, the query below
+| had no contextual WHERE conditions and therefore returned all approved
+| properties.
+|
+*/
 
+$hasApplicableCriteria =
+    $typeId !== null
+    ||
+    $minBudget !== null
+    ||
+    $maxBudget !== null
+    ||
+    $minBedrooms !== null
+    ||
+    $maxBedrooms !== null
+    ||
+    $location['scope'] !== null
+    ||
+    $normalizedActionType !== null
+    ||
+    $furnishingStatus !== null
+    ||
+    !empty($poiFilters);
+if (!$hasApplicableCriteria) {
+
+    return response()->json([
+
+        'success' =>
+            true,
+
+        'query' =>
+            $searchText,
+
+        'language' =>
+            $language,
+
+        'ai_understanding' => [
+
+            'location_scope' =>
+                null,
+
+            'city_id' =>
+                null,
+
+            'city_name' =>
+                null,
+
+            'emirate_id' =>
+                null,
+
+            'emirate_name' =>
+                null,
+
+            'property_type' =>
+                $propertyType,
+
+            'type_id' =>
+                null,
+
+            'min_budget' =>
+                $minBudget,
+
+            'max_budget' =>
+                $maxBudget,
+
+            'budget_currency' =>
+                $currency,
+
+            'min_bedrooms' =>
+                $minBedrooms,
+
+            'max_bedrooms' =>
+                $maxBedrooms,
+
+            'action_type' =>
+                $normalizedActionType,
+'furnishing_status' =>
+    $furnishingStatus,
+            'location_hint' =>
+                $locationHint,
+
+            'vibe_tags' =>
+                $vibeTags,
+
+            'required_amenities' =>
+                $requiredAmenities,
+
+            'confidence' =>
+                $confidence,
+
+            'needs_clarification' =>
+                true,
+
+            'clarification_message' =>
+                $language === 'ar'
+                    ? 'يرجى إضافة معلومات أوضح مثل نوع العقار أو السعر أو الموقع أو عدد الغرف أو الشراء/الإيجار.'
+                    : 'Please add clearer criteria such as property type, budget, location, bedrooms, or rent/buy.',
+        ],
+
+        'total_results' =>
+            0,
+
+        'returned_results' =>
+            0,
+
+        'properties' =>
+            [],
+
+    ]);
+}
             $propertiesQuery =
                 DB::table(
                     'properties as p'
@@ -408,7 +820,19 @@ class AIContextualSearchController extends Controller
                         $normalizedActionType
                     );
             }
+/*
+|--------------------------------------------------------------------------
+| Furnishing status
+|--------------------------------------------------------------------------
+*/
 
+if ($furnishingStatus !== null) {
+    $propertiesQuery
+        ->where(
+            'p.is_furnished',
+            $furnishingStatus
+        );
+}
             /*
             |--------------------------------------------------------------------------
             | POI constraints
@@ -992,18 +1416,14 @@ class AIContextualSearchController extends Controller
                     )
                     ->values();
 
-            $clarificationMessage =
-                null;
+         $clarificationMessage = null;
 
-            if (
-                $needsClarification
-            ) {
-                $clarificationMessage =
-                    $language === 'ar'
-                        ? 'يرجى توضيح الطلب أكثر، خاصة إذا كان نفس المكان مطلوبًا قريبًا وبعيدًا في الوقت نفسه.'
-                        : 'Please clarify the request, especially if the same POI is requested as both near and far.';
-            }
-
+if ($needsClarification) {
+    $clarificationMessage =
+        $language === 'ar'
+            ? 'يحتوي طلب البحث على معلومات غير واضحة أو شروط متعارضة. يرجى توضيح طلبك.'
+            : 'The search request contains ambiguous or conflicting criteria. Please clarify your request.';
+}
             return response()->json([
                 'success' =>
                     true,
@@ -1083,7 +1503,8 @@ class AIContextualSearchController extends Controller
 
                     'action_type' =>
                         $normalizedActionType,
-
+'furnishing_status' =>
+    $furnishingStatus,
                     'vibe_tags' =>
                         $vibeTags,
 
@@ -1844,423 +2265,568 @@ class AIContextualSearchController extends Controller
         return $result;
     }
 
+private function resolvePoiFilters(
+    array $requiredAmenities
+): array {
 
-    private function resolvePoiFilters(
-        array $requiredAmenities
-    ): array {
+    $filters =
+        [];
 
-        $filters =
-            [];
+    $poiMap = [
+        'restaurant' => [
+            'category' =>
+                'amenities',
 
-        $poiMap = [
-            'restaurant' => [
-                'category' =>
-                    'amenities',
+            'subcategory' =>
+                'restaurant',
 
-                'subcategory' =>
-                    'restaurant',
-
-                'aliases' => [
-                    'restaurant',
-                    'restaurants',
-                    'مطعم',
-                    'مطاعم',
-                ],
+            'aliases' => [
+                'restaurant',
+                'restaurants',
+                'مطعم',
+                'مطاعم',
             ],
+        ],
 
-            'supermarket' => [
-                'category' =>
-                    'amenities',
+        'supermarket' => [
+            'category' =>
+                'amenities',
 
-                'subcategory' =>
-                    'supermarket',
+            'subcategory' =>
+                'supermarket',
 
-                'aliases' => [
-                    'supermarket',
-                    'super market',
-                    'grocery',
-                    'grocery store',
-                    'سوبرماركت',
-                    'سوبر ماركت',
-                    'بقالة',
-                ],
+            'aliases' => [
+                'supermarket',
+                'super market',
+                'grocery',
+                'grocery store',
+                'سوبرماركت',
+                'سوبر ماركت',
+                'بقالة',
             ],
+        ],
 
-            'cafe' => [
-                'category' =>
-                    'amenities',
+        'cafe' => [
+            'category' =>
+                'amenities',
 
-                'subcategory' =>
-                    'cafe',
+            'subcategory' =>
+                'cafe',
 
-                'aliases' => [
-                    'cafe',
-                    'café',
-                    'coffee shop',
-                    'coffee',
-                    'مقهى',
-                    'كافيه',
-                    'كوفي',
-                ],
+            'aliases' => [
+                'cafe',
+                'café',
+                'coffee shop',
+                'coffee',
+                'مقهى',
+                'كافيه',
+                'كوفي',
             ],
+        ],
 
-            'pharmacy' => [
-                'category' =>
-                    'amenities',
+        'pharmacy' => [
+            'category' =>
+                'amenities',
 
-                'subcategory' =>
-                    'pharmacy',
+            'subcategory' =>
+                'pharmacy',
 
-                'aliases' => [
-                    'pharmacy',
-                    'drugstore',
-                    'صيدلية',
-                    'صيدليه',
-                ],
+            'aliases' => [
+                'pharmacy',
+                'drugstore',
+                'صيدلية',
+                'صيدليه',
             ],
+        ],
 
-            'transit_station' => [
-                'category' =>
-                    'amenities',
+        'transit_station' => [
+            'category' =>
+                'amenities',
 
-                'subcategory' =>
-                    'transit_station',
+            'subcategory' =>
+                'transit_station',
 
-                'aliases' => [
-                    'transit station',
-                    'metro station',
-                    'bus station',
-                    'train station',
-                    'metro',
-                    'محطة مترو',
-                    'محطة باص',
-                    'محطة حافلات',
-                    'مترو',
-                    'محطة',
-                ],
+            'aliases' => [
+                'transit station',
+                'metro station',
+                'bus station',
+                'train station',
+                'metro',
+                'محطة مترو',
+                'محطة باص',
+                'محطة حافلات',
+                'مترو',
+                'محطة',
             ],
+        ],
 
-            'school' => [
-                'category' =>
-                    'amenities',
+        'school' => [
+            'category' =>
+                'amenities',
 
-                'subcategory' =>
-                    'school',
+            'subcategory' =>
+                'school',
 
-                'aliases' => [
-                    'school',
-                    'schools',
-                    'مدرسة',
-                    'مدرسه',
-                    'مدارس',
-                ],
+            'aliases' => [
+                'school',
+                'schools',
+                'مدرسة',
+                'مدرسه',
+                'مدارس',
             ],
+        ],
 
-            'clinic' => [
-                'category' =>
-                    'safety',
+        'clinic' => [
+            'category' =>
+                'safety',
 
-                'subcategory' =>
-                    'clinic',
+            'subcategory' =>
+                'clinic',
 
-                'aliases' => [
-                    'clinic',
-                    'medical clinic',
-                    'عيادة',
-                    'عياده',
-                    'مستوصف',
-                ],
+            'aliases' => [
+                'clinic',
+                'medical clinic',
+                'عيادة',
+                'عياده',
+                'مستوصف',
             ],
+        ],
 
-            'hospital' => [
-                'category' =>
-                    'safety',
+        'hospital' => [
+            'category' =>
+                'safety',
 
-                'subcategory' =>
-                    'hospital',
+            'subcategory' =>
+                'hospital',
 
-                'aliases' => [
-                    'hospital',
-                    'hospitals',
-                    'مستشفى',
-                    'مستشفيات',
-                ],
+            'aliases' => [
+                'hospital',
+                'hospitals',
+                'مستشفى',
+                'مستشفيات',
             ],
+        ],
 
-            'park' => [
-                'category' =>
-                    'quietness_positive',
+        'park' => [
+            'category' =>
+                'quietness_positive',
 
-                'subcategory' =>
-                    'park',
+            'subcategory' =>
+                'park',
 
-                'aliases' => [
-                    'park',
-                    'parks',
-                    'garden',
-                    'public park',
-                    'حديقة',
-                    'حديقه',
-                    'منتزه',
-                ],
+            'aliases' => [
+                'park',
+                'parks',
+                'garden',
+                'public park',
+                'حديقة',
+                'حديقه',
+                'منتزه',
             ],
+        ],
 
-            'police' => [
-                'category' =>
-                    'safety',
+        'police' => [
+            'category' =>
+                'safety',
 
-                'subcategory' =>
-                    'police',
+            'subcategory' =>
+                'police',
 
-                'aliases' => [
-                    'police station',
-                    'police',
-                    'مركز شرطة',
-                    'شرطة',
-                    'مخفر',
-                ],
+            'aliases' => [
+                'police station',
+                'police',
+                'مركز شرطة',
+                'شرطة',
+                'مخفر',
             ],
+        ],
 
-            'bar' => [
-                'category' =>
-                    'quietness_negative',
+        'bar' => [
+            'category' =>
+                'quietness_negative',
 
-                'subcategory' =>
-                    'bar',
+            'subcategory' =>
+                'bar',
 
-                'aliases' => [
-                    'bar',
-                    'bars',
-                    'بار',
-                ],
+            'aliases' => [
+                'bar',
+                'bars',
+                'بار',
             ],
+        ],
 
-            'nightclub' => [
-                'category' =>
-                    'quietness_negative',
+        'nightclub' => [
+            'category' =>
+                'quietness_negative',
 
-                'subcategory' =>
-                    'nightclub',
+            'subcategory' =>
+                'nightclub',
 
-                'aliases' => [
-                    'nightclub',
-                    'night club',
-                    'nightclubs',
-                    'night clubs',
-                    'نادي ليلي',
-                    'ملهى ليلي',
-                    'ملاهي ليلية',
-                ],
+            'aliases' => [
+                'nightclub',
+                'night club',
+                'nightclubs',
+                'night clubs',
+                'نادي ليلي',
+                'ملهى ليلي',
+                'ملاهي ليلية',
             ],
-        ];
+        ],
+    ];
 
-        foreach (
-            $requiredAmenities
-            as $requested
-        ) {
-            $normalized =
-                mb_strtolower(
-                    trim(
-                        (string)
-                        $requested
-                    )
-                );
+    foreach (
+        $requiredAmenities
+        as $requested
+    ) {
 
-            $normalized =
-                preg_replace(
-                    '/\s+/u',
-                    ' ',
-                    $normalized
-                )
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize amenity input
+        |--------------------------------------------------------------------------
+        |
+        | Supports string values:
+        |
+        | nearby school
+        | near school
+        | far school
+        | far from school
+        |
+        | And array values such as:
+        |
+        | [
+        |     'amenity' => 'school',
+        |     'relation' => 'near',
+        | ]
+        |
+        */
+
+        if (is_array($requested)) {
+
+            $amenityName =
+                $requested['amenity']
                 ??
-                $normalized;
-
-            $relation =
+                $requested['type']
+                ??
+                $requested['name']
+                ??
+                $requested['subcategory']
+                ??
                 null;
 
-            $body =
-                $normalized;
+            $requestedRelation =
+                $requested['relation']
+                ?? null;
+
+            /*
+            |--------------------------------------------------------------------------
+            | Ignore malformed array values
+            |--------------------------------------------------------------------------
+            */
 
             if (
-                str_starts_with(
-                    $normalized,
-                    'nearby '
-                )
+                !is_string($amenityName)
+                ||
+                trim($amenityName) === ''
             ) {
-                $relation =
-                    'near';
+                continue;
+            }
 
-                $body =
-                    trim(
-                        mb_substr(
-                            $normalized,
-                            mb_strlen(
-                                'nearby '
-                            )
+            $amenityName =
+                trim($amenityName);
+
+            if (is_string($requestedRelation)) {
+
+                $requestedRelation =
+                    mb_strtolower(
+                        trim(
+                            $requestedRelation
                         )
                     );
 
-            } elseif (
-                str_starts_with(
-                    $normalized,
-                    'near '
-                )
-            ) {
-                $relation =
-                    'near';
+            } else {
 
-                $body =
-                    trim(
-                        mb_substr(
-                            $normalized,
-                            mb_strlen(
-                                'near '
-                            )
-                        )
-                    );
-
-            } elseif (
-                str_starts_with(
-                    $normalized,
-                    'far from '
-                )
-            ) {
-                $relation =
-                    'far';
-
-                $body =
-                    trim(
-                        mb_substr(
-                            $normalized,
-                            mb_strlen(
-                                'far from '
-                            )
-                        )
-                    );
-
-            } elseif (
-                str_starts_with(
-                    $normalized,
-                    'far '
-                )
-            ) {
-                $relation =
-                    'far';
-
-                $body =
-                    trim(
-                        mb_substr(
-                            $normalized,
-                            mb_strlen(
-                                'far '
-                            )
-                        )
-                    );
+                $requestedRelation =
+                    null;
             }
 
             /*
             |--------------------------------------------------------------------------
-            | Backward compatibility
+            | Convert array format to canonical string format
             |--------------------------------------------------------------------------
-            |
-            | Old values without near/far are treated as NEAR.
-            |
             */
 
-            $relation ??=
-                'near';
-
-            foreach (
-                $poiMap
-                as $key =>
-                $definition
+            if (
+                in_array(
+                    $requestedRelation,
+                    [
+                        'far',
+                        'far_from',
+                        'far from',
+                        'away',
+                    ],
+                    true
+                )
             ) {
-                $aliases =
-                    array_map(
-                        static fn (
-                            $value
-                        ) =>
-                            mb_strtolower(
-                                trim(
-                                    (string)
-                                    $value
-                                )
-                            ),
 
-                        $definition[
-                            'aliases'
-                        ]
-                    );
+                $requested =
+                    'far '
+                    . $amenityName;
 
-                if (
-                    $body
-                    ===
-                    mb_strtolower(
-                        $key
-                    )
+            } else {
 
-                    ||
-
-                    $body
-                    ===
-                    mb_strtolower(
-                        str_replace(
-                            '_',
-                            ' ',
-                            $key
-                        )
-                    )
-
-                    ||
-
-                    in_array(
-                        $body,
-                        $aliases,
-                        true
-                    )
-                ) {
-                    $uniqueKey =
-                        $relation
-                        . ':'
-                        . $key;
-
-                    $filters[
-                        $uniqueKey
-                    ] = [
-                        'key' =>
-                            $key,
-
-                        'requested' =>
-                            (string)
-                            $requested,
-
-                        'relation' =>
-                            $relation,
-
-                        'category' =>
-                            $definition[
-                                'category'
-                            ],
-
-                        'subcategory' =>
-                            $definition[
-                                'subcategory'
-                            ],
-
-                        'radius_km' =>
-                            self::POI_RADIUS_KM,
-                    ];
-
-                    break;
-                }
+                $requested =
+                    'nearby '
+                    . $amenityName;
             }
+
+        } elseif (
+            is_string($requested)
+            ||
+            is_numeric($requested)
+        ) {
+
+            $requested =
+                trim(
+                    (string)
+                    $requested
+                );
+
+            if ($requested === '') {
+                continue;
+            }
+
+        } else {
+
+            /*
+            |--------------------------------------------------------------------------
+            | Ignore unsupported values safely
+            |--------------------------------------------------------------------------
+            */
+
+            continue;
         }
 
-        return array_values(
-            $filters
-        );
+        /*
+        |--------------------------------------------------------------------------
+        | Normalize text
+        |--------------------------------------------------------------------------
+        */
+
+        $normalized =
+            mb_strtolower(
+                trim(
+                    $requested
+                )
+            );
+
+        $normalized =
+            preg_replace(
+                '/\s+/u',
+                ' ',
+                $normalized
+            )
+            ??
+            $normalized;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Detect relation
+        |--------------------------------------------------------------------------
+        */
+
+        $relation =
+            null;
+
+        $body =
+            $normalized;
+
+        if (
+            str_starts_with(
+                $normalized,
+                'nearby '
+            )
+        ) {
+            $relation =
+                'near';
+
+            $body =
+                trim(
+                    mb_substr(
+                        $normalized,
+                        mb_strlen(
+                            'nearby '
+                        )
+                    )
+                );
+
+        } elseif (
+            str_starts_with(
+                $normalized,
+                'near '
+            )
+        ) {
+            $relation =
+                'near';
+
+            $body =
+                trim(
+                    mb_substr(
+                        $normalized,
+                        mb_strlen(
+                            'near '
+                        )
+                    )
+                );
+
+        } elseif (
+            str_starts_with(
+                $normalized,
+                'far from '
+            )
+        ) {
+            $relation =
+                'far';
+
+            $body =
+                trim(
+                    mb_substr(
+                        $normalized,
+                        mb_strlen(
+                            'far from '
+                        )
+                    )
+                );
+
+        } elseif (
+            str_starts_with(
+                $normalized,
+                'far '
+            )
+        ) {
+            $relation =
+                'far';
+
+            $body =
+                trim(
+                    mb_substr(
+                        $normalized,
+                        mb_strlen(
+                            'far '
+                        )
+                    )
+                );
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Backward compatibility
+        |--------------------------------------------------------------------------
+        |
+        | Old values without near/far are treated as NEAR.
+        |
+        */
+
+        $relation ??=
+            'near';
+
+        /*
+        |--------------------------------------------------------------------------
+        | Resolve requested amenity
+        |--------------------------------------------------------------------------
+        */
+
+        foreach (
+            $poiMap
+            as $key =>
+            $definition
+        ) {
+
+            $aliases =
+                array_map(
+                    static fn (
+                        $value
+                    ) =>
+                        mb_strtolower(
+                            trim(
+                                (string)
+                                $value
+                            )
+                        ),
+
+                    $definition[
+                        'aliases'
+                    ]
+                );
+
+            if (
+                $body
+                ===
+                mb_strtolower(
+                    $key
+                )
+
+                ||
+
+                $body
+                ===
+                mb_strtolower(
+                    str_replace(
+                        '_',
+                        ' ',
+                        $key
+                    )
+                )
+
+                ||
+
+                in_array(
+                    $body,
+                    $aliases,
+                    true
+                )
+            ) {
+
+                $uniqueKey =
+                    $relation
+                    . ':'
+                    . $key;
+
+                $filters[
+                    $uniqueKey
+                ] = [
+                    'key' =>
+                        $key,
+
+                    'requested' =>
+                        (string)
+                        $requested,
+
+                    'relation' =>
+                        $relation,
+
+                    'category' =>
+                        $definition[
+                            'category'
+                        ],
+
+                    'subcategory' =>
+                        $definition[
+                            'subcategory'
+                        ],
+
+                    'radius_km' =>
+                        self::POI_RADIUS_KM,
+                ];
+
+                break;
+            }
+        }
     }
 
+    return array_values(
+        $filters
+    );
+}
 
     private function haversineSql(
         string $propertyAlias,

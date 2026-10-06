@@ -28,12 +28,22 @@ class VibeAiService
         $startedAt = microtime(true);
 
         try {
-           $response = Http::connectTimeout(5)
-    ->timeout(120)
+          $response = Http::connectTimeout(5)
+    ->timeout(15)
+    ->withOptions([
+        'version' => 1.1,
+        'curl' => [
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+        ],
+    ])
+    ->withHeaders([
+        'Connection' => 'close',
+    ])
     ->acceptJson()
     ->asJson()
     ->post($url, [
-'raw_text' => $rawText,
+        'raw_text' => $rawText,
         'language' => $language,
     ]);
 
@@ -126,13 +136,25 @@ class VibeAiService
         );
 
         try {
-            $response = Http::timeout(120)
-                ->acceptJson()
-                ->post($url, [
-                    'property_id' => (string) $propertyId,
-                    'latitude' => $latitude,
-                    'longitude' => $longitude,
-                ]);
+            $response = Http::connectTimeout(5)
+    ->timeout(15)
+    ->withOptions([
+        'version' => 1.1,
+        'curl' => [
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+            CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,
+        ],
+    ])
+    ->withHeaders([
+        'Connection' => 'close',
+    ])
+    ->acceptJson()
+    ->asJson()
+    ->post($url, [
+        'property_id' => (string) $propertyId,
+        'latitude' => $latitude,
+        'longitude' => $longitude,
+    ]);
 
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
 
